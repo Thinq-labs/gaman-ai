@@ -59,4 +59,4 @@ We are currently building out the Phase 4 MVP open-source roadmap. Contributions
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache 2.0 License - see the LICENSE file for details.
