@@ -8,7 +8,7 @@ By discarding autoregressive text generation in favor of a highly optimized, enc
 
 ## Core Capabilities
 
-Gaman AI is designed to replace generative LLMs in critical control flows where speed, reliability, and structured outputs are non-negotiable.
+Gaman AI is designed to replace the generative LLMs in critical control flows where speed, reliability, and structured outputs are non-negotiable.
 
 *   **Semantic Routing (Discrete Choices):** Route incoming requests, payloads, or agentic actions to strict predefined categories in $O(1)$ temporal steps.
 *   **Security & Guardrails (Strict Probabilities):** Execute sub-10ms binary classification (Yes/No) on inputs/outputs with calibrated epistemic uncertainty to prevent prompt injection, PII leakage, or malicious intent.
