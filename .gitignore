@@ -1,0 +1,131 @@
+# ==============================================================================
+# Gaman AI - Project .gitignore
+# Architecture: Rust/ONNX Core + Python Bindings + ML Evaluator
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Model Weights & Inference Assets
+# ------------------------------------------------------------------------------
+# Ignore large binary weights, ONNX exports, and uncompressed models.
+# (Include small architecture configs or tokenizers via negative assertions if needed)
+*.onnx
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+*.engine
+*.trt
+models/*
+!models/.gitkeep
+!models/tokenizer.json
+!models/config.json
+
+# ------------------------------------------------------------------------------
+# 2. Datasets & Evaluation Logs
+# ------------------------------------------------------------------------------
+# Ignore raw data, generated CSVs, and hackathon execution outputs
+dataset/*.csv
+dataset/*.jsonl
+dataset/*.parquet
+dataset/media/
+data/
+output.csv
+predictions.csv
+eval_results/
+wandb/
+runs/
+*.log
+log.txt
+hackerrank_orchestrate_august26/
+
+# ------------------------------------------------------------------------------
+# 3. Python (SDK & Adapters)
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env_dir/
+ENV/
+env.bak/
+.nox/
+.tox/
+
+# Typing & Linting Caches
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.pytest_cache/
+
+# ------------------------------------------------------------------------------
+# 4. Rust & C++ (Inference Engine)
+# ------------------------------------------------------------------------------
+# Cargo / Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# C++ Build & ONNX Runtime bindings
+build_*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# ------------------------------------------------------------------------------
+# 5. OS, IDEs & Secrets
+# ------------------------------------------------------------------------------
+# Environment variables and API keys
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.toml
+
+# OS System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs & Editors
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+.vim/
