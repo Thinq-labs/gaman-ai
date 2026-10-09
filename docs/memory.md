@@ -1,7 +1,7 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-09T23:41:00+05:30
-**Current Status:** Gaman AI v0.2 Zero-Clone Pip Distribution & Auto-Weights Downloader Complete. 156/156 tests passing.
+**Last Updated:** 2026-10-10T00:38:00+05:30
+**Current Status:** Gaman AI v0.2 GitHub Actions CI Matrix Fixed & Cleaned. 156/156 tests passing. Commit ca4e5d0.
 
 ## Active Context
 - **Zero-Clone Pip Distribution & Auto-Weights Downloader:**
@@ -28,3 +28,8 @@
 - **Atomic File Writes:** No half-downloaded or corrupted model files from interrupted network transfers.
 - **Bit-For-Bit Embedding Identity:** `embed_batch(states)[i] == embed(states[i])`.
 - **Backward Compatibility:** Single-model flat deployments (`models/backbone.onnx`) continue to run seamlessly without relocation.
+
+## CI Matrix Fixes (ca4e5d0)
+- **Cross-Platform Shell Parity:** Added `defaults.run.shell: bash` to `.github/workflows/ci.yml` so runner steps execute uniformly across Linux, macOS, and Windows.
+- **Dedicated CI Pre-flight Script:** Created `scripts/ci_prepare_model.py` to safely inspect existing cached weights and invoke `scripts/export_backbone.py --tier small` without fragile in-line shell chain logic.
+- **Linter & Formatting Hygiene:** Fixed 44 Ruff lint violations across `src/`, `tests/`, and `scripts/` (unused imports, file context managers, generator expressions, ternary conversions). Clean 0-error Ruff check across entire repo.
