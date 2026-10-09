@@ -158,6 +158,21 @@ class GamanEngine:
             "latency_ms": float(round(latency_ms, 2)),
         }
 
+    @staticmethod
+    def _normalize_predicate(predicate: str) -> str:
+        """
+        Normalize interrogative question predicates into declarative statements
+        so the NLI cross-encoder evaluates true semantic entailment.
+        """
+        p = predicate.strip()
+        if p.lower().startswith("is this "):
+            p = "This is " + p[8:]
+        elif p.lower().startswith("is "):
+            p = p[3:] + " is"
+        if p.endswith("?"):
+            p = p[:-1] + "."
+        return p
+
     def noul(self, state: dict[str, Any], predicate: str) -> dict[str, Any]:
         """
         Predicate / Guardrail check: Evaluates if state satisfies a strict condition.
@@ -171,7 +186,8 @@ class GamanEngine:
             {"primitive": "noul", "passed": bool, "probability": float, "latency_ms": float}
         """
         t0 = time.perf_counter()
-        premise, hypothesis = build_nli_pair(state, predicate)
+        hypothesis = self._normalize_predicate(predicate)
+        premise, hypothesis = build_nli_pair(state, hypothesis)
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
         logits = self._forward(enc)  # [1, num_labels]
