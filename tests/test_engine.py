@@ -32,6 +32,8 @@ class TestEngineInit:
 
     def test_missing_model_raises_file_not_found(self, tmp_path: Path) -> None:
         with pytest.raises(ModelNotFoundError, match="Model tier 'small' not found in"):
+            GamanEngine(slab="small", models_dir=tmp_path)
+        with pytest.raises(ModelNotFoundError, match=r"Model tier '(small|base|large)' not found in"):
             GamanEngine(models_dir=tmp_path)
 
     @_requires_model
