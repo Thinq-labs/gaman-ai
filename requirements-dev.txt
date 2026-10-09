@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────
+# Gaman AI — Dev/Export Dependencies
+# These packages are ONLY for scripts/ (model export) and tooling.
+# They are NEVER imported by src/ (the inference runtime).
+# ─────────────────────────────────────────────────────────────
+
+# Include runtime deps
+-r requirements.txt
+
+# ── Export utilities (scripts/export_backbone.py only) ────────
+# HF model hub + architecture code
+transformers>=4.35.0
+
+# ONNX export bridge for HF models
+optimum[onnxruntime]>=1.14.0
+
+# Required by transformers/optimum for export (export-time only)
+torch>=2.0.0
+
+# ── Testing ────────────────────────────────────────────────────
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# ── Type checking ──────────────────────────────────────────────
+mypy>=1.5.0
+
+# ── Linting ────────────────────────────────────────────────────
+ruff>=0.1.0

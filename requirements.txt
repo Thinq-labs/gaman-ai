@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────
+# Gaman AI — Runtime Dependencies
+# These are the ONLY packages permitted in src/ (inference runtime).
+# torch, transformers, and optimum are FORBIDDEN here.
+# ─────────────────────────────────────────────────────────────
+
+# ONNX inference runtime (CPU/CUDA/DirectML/CoreML dispatch)
+onnxruntime>=1.17.0
+
+# Rust-backed fast tokenizer (Hugging Face tokenizers library)
+tokenizers>=0.15.0
+
+# Numerical computation for head projections and softmax
+numpy>=1.24.0
