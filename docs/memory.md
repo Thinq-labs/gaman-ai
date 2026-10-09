@@ -1,33 +1,30 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-09T23:11:00+05:30
-**Current Status:** Gaman AI v0.2 Pillar 3 Lightweight Adapters & Multi-Tier Model Export Complete. 146/146 tests passing.
+**Last Updated:** 2026-10-09T23:41:00+05:30
+**Current Status:** Gaman AI v0.2 Zero-Clone Pip Distribution & Auto-Weights Downloader Complete. 156/156 tests passing.
 
 ## Active Context
-- **Pillar 3: Lightweight Adapters & Multi-Tier Export Complete:**
-  - **Multi-Tier Export Tooling (`scripts/export_backbone.py`):** Added `--tier [small|base|large]` flag mapping to canonical HF checkpoints and output directories (`models/small/`, `models/base/`, `models/large/`). Cleaned non-ASCII characters to support Windows CP1252 consoles.
-  - **ModelNotFoundError Guidance:** Implemented `ModelNotFoundError(FileNotFoundError)` in `src/resolver.py` and `src/engine.py`. Emits copy-paste remediation instructions: `Run: python scripts/export_backbone.py --tier {tier}`.
-  - **Lightweight Linear Adapters (`src/heads.py`):**
-    - `CustomLinearHead`: stores weight matrix $W \in \mathbb{R}^{K \times d}$, bias vector $b \in \mathbb{R}^K$, and class mappings. Pure NumPy Softmax inference with $< 10\,\mu\text{s}$ latency overhead.
-    - `fit_adapter`: Closed-form analytical Ridge regression solver ($\tilde{W} = (\tilde{Z}^T \tilde{Z} + \lambda I')^{-1} \tilde{Z}^T Y$) in pure NumPy. Executes in $< 20\,\text{ms}$ on CPU for $N \le 2,000$ samples.
-    - JSON serialization and deserialization at `models/heads/<name>.json`.
-  - **Engine Runtime Integration (`src/engine.py`):**
-    - `embed_batch`: vectorized batch embedding extraction with bit-for-bit identity with `embed`.
-    - `predict(state, head_name)`: dynamic head resolution, in-memory caching, dimension validation, and inference reporting.
-  - **CLI Commands (`src/cli.py`):**
-    - `gaman fit`: fits linear adapter from CSV dataset and reports empirical metrics.
-    - `gaman predict`: evaluates single state across trained adapter head with human-readable and `--json` outputs.
+- **Zero-Clone Pip Distribution & Auto-Weights Downloader:**
+  - **Standard OS Cache Discovery (`src/resolver.py`):** `get_default_cache_dir()` checks `GAMAN_CACHE_DIR`, `%LOCALAPPDATA%/gaman` on Windows, and `$XDG_CACHE_HOME/gaman` on Linux/macOS.
+  - **Model Lookup Hierarchy:** Priority 1 (Explicit `models_dir`) > Priority 2 (Local cwd `./models/`) > Priority 3 (Global OS Cache) > Auto-Downloader.
+  - **Zero-Dependency Weights Downloader (`src/downloader.py`):**
+    - Pure `urllib.request` implementation with zero third-party dependencies (`no requests`, `no huggingface_hub`).
+    - Atomic writes via temporary `.tmp` staging and `os.replace`.
+    - TTY-sensitive ASCII progress bar (`Downloading Gaman AI 'small' weights (164 MB)... [=========>] 100%`) suppressed when non-interactive or under `--json`.
+  - **Engine & CLI Integration:**
+    - `GamanEngine(models_dir=None)` automatically resolves or downloads weights on first run, providing true zero-clone out-of-the-box bootstrapping for `pip install gaman-ai`.
+    - `gaman cache --dir` and `gaman cache --clean` subcommands.
+    - `gaman info` displays global cache path and status.
 
 ## Verification Metrics
-- Total Tests: **146 passed in 22.62s** (0 skipped, 0 failed).
-- Adapter Tests: **10 passed** (`tests/test_heads.py`).
+- Total Tests: **156 passed in 20.62s** (0 skipped, 0 failed).
+- Downloader & Cache Tests: **10 passed** (`tests/test_downloader.py`).
 - CLI Tests: **22 passed** (`tests/test_cli.py`).
-- Analytical Fitting Benchmark: $N = 2,000$ in $\mathbb{R}^{768}$ fits in **16.8 ms** on CPU (< 1.0s requirement).
-- Adapter Forward Pass Overhead: **< 5.0 µs** (< 10 µs requirement).
+- Adapter Tests: **10 passed** (`tests/test_heads.py`).
 
 ## Key Architectural Invariants
-- **Zero torch in runtime:** strictly `onnxruntime`, `tokenizers`, `numpy`.
-- **Zero scikit-learn in runtime:** closed-form normal equations solved in pure NumPy.
+- **Zero third-party network dependencies in runtime:** pure standard library `urllib.request`.
+- **Zero torch / transformers in runtime:** strictly `onnxruntime`, `tokenizers`, `numpy`.
+- **Atomic File Writes:** No half-downloaded or corrupted model files from interrupted network transfers.
 - **Bit-For-Bit Embedding Identity:** `embed_batch(states)[i] == embed(states[i])`.
-- **Rank Preservation & Shift Invariance:** Universal primitives preserve mathematical invariants.
 - **Backward Compatibility:** Single-model flat deployments (`models/backbone.onnx`) continue to run seamlessly without relocation.

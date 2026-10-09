@@ -111,3 +111,24 @@
   - Fit: `gaman fit --data <data.csv> --state-column <col> --target-column <col> --name <head_name> [--l2-reg 1.0]`
   - Predict: `gaman predict --state '<json>' --head <head_name> [--json]`
 - **Status:** LOCKED.
+
+---
+
+## ADR 012: Zero-Clone Distribution and OS-Native Cache Resolution
+- **Decision:** Implement zero-clone out-of-the-box bootstrapping for `pip install gaman-ai` users via automated cache directory resolution and zero-dependency urllib weights downloading.
+- **Cache Directory Hierarchy:**
+  1. Priority 1 (Explicit Path): User-supplied `models_dir` if provided.
+  2. Priority 2 (Local Development): Current working directory `./models/<tier>/` or `./models/`.
+  3. Priority 3 (Global Cache): Standard OS directory via `get_default_cache_dir()`:
+     - Windows: `%LOCALAPPDATA%/gaman` (or `~/.cache/gaman`)
+     - Linux/macOS: `$XDG_CACHE_HOME/gaman` (or `~/.cache/gaman`)
+     - Override: `GAMAN_CACHE_DIR` environment variable.
+- **Atomic Downloading & Zero Runtime Dependencies:**
+  - Implemented in `src/downloader.py` using Python's built-in `urllib.request`. Zero external HTTP client dependencies (`no requests`, `no huggingface_hub` in runtime).
+  - Atomic writing via temporary `.tmp` files and `os.replace` to prevent corrupted model states from aborted downloads.
+  - TTY-sensitive ASCII progress bar (`Downloading Gaman AI 'small' weights (164 MB)... [=========>] 100%`) completely suppressed when non-interactive or when `--json` is passed.
+- **CLI Cache Management:**
+  - `gaman cache --dir`: displays active global cache path.
+  - `gaman cache --clean`: wipes cached model files.
+  - `gaman info`: reports cache status and directory presence.
+- **Status:** LOCKED.

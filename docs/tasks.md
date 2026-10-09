@@ -75,3 +75,21 @@
   - [x] `gaman predict --state '<json>' --head <name> [--json]`.
 - [x] Write comprehensive unit and integration tests in `tests/test_heads.py` and `tests/test_cli.py`.
 - [x] Record ADR 011 in `docs/adr.md`.
+
+---
+
+## v0.2 - Zero-Clone Pip Distribution & Auto-Weights Downloader
+- [x] Implement standard OS cache discovery in `src/resolver.py`:
+  - [x] `get_default_cache_dir()` checking `GAMAN_CACHE_DIR`, `%LOCALAPPDATA%/gaman`, and `$XDG_CACHE_HOME/gaman`.
+  - [x] Model lookup hierarchy in `resolve_model_path`: Explicit > Local cwd (`./models`) > Global OS Cache.
+- [x] Implement zero-dependency weights downloader in `src/downloader.py`:
+  - [x] Pure `urllib.request` implementation with zero third-party packages.
+  - [x] Atomic write via temporary files (`.tmp`) and `os.replace`.
+  - [x] TTY-sensitive ASCII progress bar suppressed when non-interactive or under `--json`.
+  - [x] `ensure_model_tier(tier, cache_dir, silent)` on-demand bootstrap.
+- [x] Engine & CLI integration:
+  - [x] `GamanEngine(models_dir=None)` automatically resolves or downloads weights on first run.
+  - [x] `gaman cache --dir` and `gaman cache --clean` subcommands in `src/cli.py`.
+  - [x] `gaman info` displays global cache path and status.
+- [x] Write comprehensive tests in `tests/test_downloader.py` (10/10 passing).
+- [x] Record ADR 012 in `docs/adr.md`.

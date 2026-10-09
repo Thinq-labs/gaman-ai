@@ -31,7 +31,7 @@ from src.calibration import (
     save_calibration,
 )
 from src.engine import GamanEngine
-from src.resolver import detect_hardware, resolve_model_path, resolve_slab
+from src.resolver import detect_hardware, get_default_cache_dir, resolve_model_path, resolve_slab
 from src.serializer import build_nli_pair, serialize_state
 
 
@@ -534,7 +534,9 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
 def handle_info(args: argparse.Namespace) -> int:
     profile = detect_hardware()
     slab = resolve_slab(requested_slab=args.slab, profile=profile)
-    model_dir = resolve_model_path(args.models_dir, slab.tier)
+    model_dir = resolve_model_path(tier=slab.tier, models_dir=args.models_dir, auto_download=False)
+    cache_dir = get_default_cache_dir()
+    models_cache = cache_dir / "models"
 
     vram_gb = (
         round(profile.vram_bytes / (1024**3), 2)
@@ -562,6 +564,10 @@ def handle_info(args: argparse.Namespace) -> int:
                 "model_dir": str(model_dir),
                 "model_dir_exists": (model_dir / "backbone.onnx").exists(),
             },
+            "cache": {
+                "cache_dir": str(cache_dir),
+                "models_cache_exists": models_cache.exists(),
+            },
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -582,7 +588,31 @@ def handle_info(args: argparse.Namespace) -> int:
         print(f"  Hidden Dimension:  {slab.hidden_dim}")
         print(f"  Selected Provider: {slab.provider}")
         print(f"  Model Path:        {model_dir} (exists: {(model_dir / 'backbone.onnx').exists()})")
+        print(f"  Global Cache:      {cache_dir} (exists: {models_cache.exists()})")
         print("============================================================")
+    return 0
+
+
+def handle_cache(args: argparse.Namespace) -> int:
+    import shutil
+
+    cache_dir = get_default_cache_dir()
+    models_cache = cache_dir / "models"
+
+    if args.dir:
+        print(str(cache_dir))
+        return 0
+
+    if args.clean:
+        if models_cache.exists():
+            shutil.rmtree(models_cache)
+            print(f"Cache cleared: {models_cache}")
+        else:
+            print(f"Cache is already clean: {models_cache}")
+        return 0
+
+    print(f"Gaman AI Cache Directory: {cache_dir}")
+    print(f"Models Cache Exists:      {models_cache.exists()}")
     return 0
 
 
@@ -596,8 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--models-dir",
         type=str,
-        default="models",
-        help="Path to models artifact directory (default: 'models').",
+        default=None,
+        help="Path to models artifact directory (default: None, auto-resolved).",
     )
     parser.add_argument(
         "--slab",
@@ -706,6 +736,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_pred.add_argument("--head", type=str, required=True, help="Adapter head name")
     p_pred.add_argument("--json", action="store_true", help="Output raw schema JSON")
 
+    # 9. cache
+    p_cache = subparsers.add_parser("cache", help="Manage Gaman AI downloaded models cache")
+    p_cache.add_argument("--dir", action="store_true", help="Print active cache directory path")
+    p_cache.add_argument("--clean", action="store_true", help="Wipe downloaded model weights cache")
+
     return parser
 
 
@@ -722,10 +757,13 @@ def main(
 
     if args.subcommand == "info":
         return handle_info(args)
+    elif args.subcommand == "cache":
+        return handle_cache(args)
 
+    silent = getattr(args, "json", False)
     if engine is None:
         try:
-            engine = GamanEngine(slab=args.slab, models_dir=args.models_dir)
+            engine = GamanEngine(slab=args.slab, models_dir=args.models_dir, silent=silent)
         except Exception as exc:
             print(f"Error initializing GamanEngine: {exc}", file=sys.stderr)
             return 1
