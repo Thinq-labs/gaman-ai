@@ -242,25 +242,94 @@ def resolve_slab(
     )
 
 
-def resolve_model_path(models_dir: Path | str, tier: str) -> Path:
+def get_default_cache_dir() -> Path:
     """
-    Resolve model directory path with multi-model layout and backwards compatibility.
+    Discover standard OS cache directory for Gaman AI.
 
-    Checks:
-    1. models/<tier>/backbone.onnx
-    2. models/backbone.onnx (legacy flat directory fallback)
+    Priority:
+    1. GAMAN_CACHE_DIR environment variable
+    2. Windows: %LOCALAPPDATA%/gaman or ~/.cache/gaman
+    3. Linux / Darwin: $XDG_CACHE_HOME/gaman or ~/.cache/gaman
+    """
+    env_cache = os.environ.get("GAMAN_CACHE_DIR")
+    if env_cache:
+        return Path(env_cache)
+
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "gaman"
+        return Path.home() / "AppData" / "Local" / "gaman"
+
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "gaman"
+    return Path.home() / ".cache" / "gaman"
+
+
+def resolve_model_path(
+    tier: str | Path | None = None,
+    models_dir: Path | str | None = None,
+    auto_download: bool = True,
+    silent: bool = False,
+) -> Path:
+    """
+    Resolve model directory path with multi-tier layout, local caching, and auto-downloading.
+
+    Lookup Priority:
+    1. Priority 1 (Explicit): If models_dir is explicitly passed, check models_dir/<tier> then models_dir.
+    2. Priority 2 (Local Development): If ./models/<tier>/backbone.onnx or ./models/backbone.onnx exists in cwd.
+    3. Priority 3 (Global Cache): Check <cache_dir>/models/<tier>/.
+    4. Auto-Downloader: If not found and auto_download is True (and models_dir is None), download into cache.
 
     Args:
-        models_dir: Root models directory path.
-        tier: Resolved tier ('small', 'base', 'large').
+        tier: Resolved tier ('small', 'base', 'large') or models_dir path for backwards compatibility.
+        models_dir: Optional root models directory path.
+        auto_download: Whether to invoke automated downloader if weights missing.
+        silent: Whether to suppress progress bars during auto-download.
 
     Returns:
-        Path to directory containing backbone.onnx, tokenizer.json, and config.json.
+        Path to directory containing backbone.onnx.
     """
-    p = Path(models_dir)
-    tiered_dir = p / tier
-    if (tiered_dir / "backbone.onnx").exists():
-        return tiered_dir
-    if (p / "backbone.onnx").exists():
-        return p
-    return tiered_dir
+    # Backwards-compatibility argument normalizer
+    # Supports both resolve_model_path(tier, models_dir) and resolve_model_path(models_dir, tier)
+    known_tiers = {"small", "base", "large"}
+    if str(models_dir).lower() in known_tiers and str(tier).lower() not in known_tiers:
+        actual_tier = str(models_dir).lower()
+        actual_models_dir = Path(tier) if tier is not None else None
+    elif str(tier).lower() in known_tiers:
+        actual_tier = str(tier).lower()
+        actual_models_dir = Path(models_dir) if models_dir is not None else None
+    else:
+        actual_tier = "small"
+        actual_models_dir = Path(models_dir) if models_dir is not None else (Path(tier) if tier is not None else None)
+
+    # 1. Priority 1: Explicit models_dir
+    if actual_models_dir is not None:
+        tiered = actual_models_dir / actual_tier
+        if (tiered / "backbone.onnx").exists():
+            return tiered
+        if (actual_models_dir / "backbone.onnx").exists():
+            return actual_models_dir
+        return tiered
+
+    # 2. Priority 2: Local Development (./models in current working directory)
+    cwd_models = Path("models")
+    if (cwd_models / actual_tier / "backbone.onnx").exists():
+        return cwd_models / actual_tier
+    if (cwd_models / "backbone.onnx").exists():
+        return cwd_models
+
+    # 3. Priority 3: Global OS Cache
+    cache_dir = get_default_cache_dir()
+    cached_tier = cache_dir / "models" / actual_tier
+    if (cached_tier / "backbone.onnx").exists():
+        return cached_tier
+
+    # 4. Auto-Downloader
+    if auto_download:
+        from src.downloader import ensure_model_tier
+
+        return ensure_model_tier(actual_tier, cache_dir=cache_dir, silent=silent)
+
+    return cached_tier

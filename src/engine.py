@@ -48,16 +48,18 @@ class GamanEngine:
     def __init__(
         self,
         slab: str = "auto",
-        models_dir: str | Path = "models",
+        models_dir: str | Path | None = None,
         backbone_filename: str = "backbone.onnx",
+        silent: bool = False,
     ) -> None:
         """
         Initialize inference session and tokenizer with dynamic Spec Slab resolution.
 
         Args:
             slab: Spec Slab tier ('auto', 'small', 'base', 'large').
-            models_dir: Root directory containing model artifacts.
+            models_dir: Root directory containing model artifacts (default None: auto-resolved).
             backbone_filename: Name of ONNX model file inside resolved tier folder.
+            silent: Suppress progress outputs during automatic downloads.
         """
         # Backwards-compatibility check for positional models_dir
         if isinstance(slab, Path) or (
@@ -70,7 +72,12 @@ class GamanEngine:
 
         self.requested_slab: str = slab
         self.slab_config: SlabConfig = resolve_slab(requested_slab=slab)
-        self.models_dir: Path = resolve_model_path(models_dir, self.slab_config.tier)
+        self.models_dir: Path = resolve_model_path(
+            tier=self.slab_config.tier,
+            models_dir=models_dir,
+            auto_download=(models_dir is None),
+            silent=silent,
+        )
         self.model_path = self.models_dir / backbone_filename
         self.config_path = self.models_dir / "config.json"
 
