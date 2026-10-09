@@ -77,6 +77,9 @@ class GamanEngine:
         # 3. Offline Fast Tokenizer
         self.tokenizer = GamanTokenizer(models_dir=self.models_dir)
 
+        # 4. Explicit Warm-up to eliminate first-query scratchpad latency penalty
+        self._warmup()
+
     def _load_config(self) -> dict[str, Any]:
         """Load model configuration dynamically."""
         if not self.config_path.exists():
@@ -96,8 +99,9 @@ class GamanEngine:
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        # Optimize CPU threading for SIMD / vector extensions
-        num_threads = os.cpu_count() or 4
+        # Optimize CPU threading for SIMD / vector extensions.
+        # Cap at 4 intra-op threads to prevent core contention on hybrid CPU architectures.
+        num_threads = min(os.cpu_count() or 4, 4)
         opts.intra_op_num_threads = num_threads
         opts.inter_op_num_threads = 1
 
@@ -108,6 +112,16 @@ class GamanEngine:
         )
         active_provider = session.get_providers()[0]
         return active_provider, session
+
+    def _warmup(self) -> None:
+        """Execute a warmup forward pass to pre-allocate ONNX memory arena and thread pools."""
+        try:
+            warmup_enc = self.tokenizer.encode_batch(
+                [("system status: normal", "The decision is to proceed.")]
+            )
+            self._forward(warmup_enc)
+        except Exception:
+            pass
 
     def _forward(self, encodings: dict[str, np.ndarray]) -> np.ndarray:
         """Execute a single parallel forward pass over the input batch."""
@@ -135,7 +149,9 @@ class GamanEngine:
 
         t0 = time.perf_counter()
         premise = serialize_state(state)
-        pairs = [(premise, f"This state corresponds to: {opt}") for opt in options]
+        # Action-oriented decision framing with clean option text
+        clean_options = [opt.replace("_", " ") for opt in options]
+        pairs = [(premise, f"The decision is to {opt}.") for opt in clean_options]
 
         # Batched tokenization with dynamic batch padding
         batch_enc = self.tokenizer.encode_batch(pairs)

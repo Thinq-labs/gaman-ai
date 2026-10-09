@@ -54,7 +54,7 @@ class TestChoicePrimitive:
         result = engine.choice(state, options)
 
         assert result["primitive"] == "choice"
-        assert result["selection"] in options
+        assert result["selection"] == "scale_up"
         assert isinstance(result["confidence"], float)
         assert 0.0 <= result["confidence"] <= 1.0
         assert isinstance(result["latency_ms"], float)
