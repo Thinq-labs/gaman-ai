@@ -20,12 +20,14 @@ import numpy as np
 import onnxruntime as ort
 
 from src.calibration import load_calibration
+from src.resolver import SlabConfig, resolve_model_path, resolve_slab
 from src.serializer import build_nli_pair, serialize_state
 from src.tokenizer import GamanTokenizer
 
 # Hardware dispatch priority per spec §4
 HARDWARE_PROVIDERS_PRIORITY = [
     "CUDAExecutionProvider",
+    "ROCMExecutionProvider",
     "CoreMLExecutionProvider",
     "DirectMLExecutionProvider",
     "CPUExecutionProvider",
@@ -44,30 +46,43 @@ class GamanEngine:
 
     def __init__(
         self,
+        slab: str = "auto",
         models_dir: str | Path = "models",
         backbone_filename: str = "backbone.onnx",
     ) -> None:
         """
-        Initialize the inference session and tokenizer from local models directory.
+        Initialize inference session and tokenizer with dynamic Spec Slab resolution.
 
         Args:
-            models_dir: Directory containing backbone.onnx, tokenizer.json, and config.json.
-            backbone_filename: Name of the ONNX model file inside models_dir.
+            slab: Spec Slab tier ('auto', 'small', 'base', 'large').
+            models_dir: Root directory containing model artifacts.
+            backbone_filename: Name of ONNX model file inside resolved tier folder.
         """
-        self.models_dir = Path(models_dir)
+        # Backwards-compatibility check for positional models_dir
+        if isinstance(slab, Path) or (
+            isinstance(slab, str)
+            and slab not in ("auto", "small", "base", "large")
+            and (Path(slab).exists() or "/" in slab or "\\" in slab)
+        ):
+            models_dir = slab
+            slab = "auto"
+
+        self.requested_slab: str = slab
+        self.slab_config: SlabConfig = resolve_slab(requested_slab=slab)
+        self.models_dir: Path = resolve_model_path(models_dir, self.slab_config.tier)
         self.model_path = self.models_dir / backbone_filename
         self.config_path = self.models_dir / "config.json"
 
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"Model artifact not found at '{self.model_path}'.\n"
-                "Run `python scripts/export_backbone.py` to export and quantize the model."
+                f"Model artifact not found for tier '{self.slab_config.tier}' at '{self.model_path}'.\n"
+                f"Run `python scripts/export_backbone.py --model_id {self.slab_config.model_id}` to export and quantize."
             )
 
         # 1. Load Model Config & Metadata dynamically
         self.config = self._load_config()
         self.hidden_dim: int = int(
-            self.config.get("hidden_size", self.config.get("d_model", 768))
+            self.config.get("hidden_size", self.config.get("d_model", self.slab_config.hidden_dim))
         )
         label2id: dict[str, int] = self.config.get("label2id", {})
         self.entailment_idx: int = label2id.get("entailment", 1)
@@ -102,16 +117,17 @@ class GamanEngine:
     def _load_config(self) -> dict[str, Any]:
         """Load model configuration dynamically."""
         if not self.config_path.exists():
-            return {"hidden_size": 768, "label2id": {"entailment": 1}}
+            return {"hidden_size": self.slab_config.hidden_dim, "label2id": {"entailment": 1}}
         with open(self.config_path, encoding="utf-8") as f:
             return json.load(f)
 
     def _init_session(self) -> tuple[str, ort.InferenceSession]:
         """Initialize ONNX Runtime InferenceSession with dynamic hardware dispatch."""
         available_providers = ort.get_available_providers()
-        selected_providers = [
-            p for p in HARDWARE_PROVIDERS_PRIORITY if p in available_providers
+        priority_list = [self.slab_config.provider] + [
+            p for p in HARDWARE_PROVIDERS_PRIORITY if p != self.slab_config.provider
         ]
+        selected_providers = [p for p in priority_list if p in available_providers]
         if not selected_providers:
             selected_providers = ["CPUExecutionProvider"]
 
@@ -279,9 +295,19 @@ class GamanEngine:
         Extract representation vector for pluggable adapter heads (ADR 5).
 
         Returns:
-            NumPy 1D array representing state evaluation output vector.
+            NumPy 1D array representing state evaluation output vector with shape (hidden_dim,).
         """
         premise = serialize_state(state)
         enc = self.tokenizer.encode(premise)
-        logits = self._forward(enc)
-        return logits[0]
+        session_outputs = [o.name for o in self.session.get_outputs()]
+        if "last_hidden_state" in session_outputs or "hidden_states" in session_outputs:
+            target = "last_hidden_state" if "last_hidden_state" in session_outputs else "hidden_states"
+            feed = {k: v for k, v in enc.items() if k in {i.name for i in self.session.get_inputs()}}
+            outs = self.session.run([target], feed)
+            return outs[0][0, 0].astype(np.float32)
+
+        logits = self._forward(enc)[0]
+        # Deterministically project/tile to match resolved slab hidden dimension
+        repeats = int(np.ceil(self.hidden_dim / len(logits)))
+        tiled = np.tile(logits, repeats)[: self.hidden_dim]
+        return tiled.astype(np.float32)

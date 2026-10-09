@@ -39,3 +39,21 @@
 - [x] Add CLI subcommand `gaman calibrate` in `src/cli.py` for dataset calibration and diagnostic reporting.
 - [x] Write comprehensive unit & integration tests in `tests/test_calibration.py` and `tests/test_cli.py`.
 - [x] Record ADR 009 in `docs/adr.md`.
+
+---
+
+## v0.2 - Pillar 2: Automated Spec Slab Resolver
+- [x] Implement `src/resolver.py`:
+  - [x] Hardware detection: `detect_hardware()`, `HardwareProfile` (providers, VRAM, RAM, CPU cores, AVX512/NEON).
+  - [x] Slab definitions: `SlabConfig` for `small`, `base`, `large` tiers.
+  - [x] Hierarchical tier resolution: `resolve_slab(target_tier="auto")` with strict fallback.
+  - [x] Model path resolution: `resolve_model_path(tier, models_dir)` with backward compatibility for flat `models/` layout.
+- [x] Parameterize `GamanEngine(slab="auto", models_dir="models")` in `src/engine.py`:
+  - [x] Dynamic hardware provider dispatch based on resolved slab profile.
+  - [x] Dynamic hidden dimension (`768` vs `1024`).
+  - [x] Update `embed(state)` method to emit representation vector of shape `(hidden_dim,)`.
+- [x] Implement CLI integration in `src/cli.py`:
+  - [x] Global `--slab [auto|small|base|large]` flag across all commands.
+  - [x] `gaman info` diagnostic subcommand with human-readable and `--json` outputs.
+- [x] Write comprehensive unit & integration tests in `tests/test_resolver.py` and `tests/test_cli.py`.
+- [x] Record ADR 010 in `docs/adr.md`.

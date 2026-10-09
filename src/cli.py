@@ -30,6 +30,7 @@ from src.calibration import (
     save_calibration,
 )
 from src.engine import GamanEngine
+from src.resolver import detect_hardware, resolve_model_path, resolve_slab
 from src.serializer import build_nli_pair, serialize_state
 
 
@@ -438,6 +439,63 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
     return 0
 
 
+# ─── System Diagnostic Handler ───────────────────────────────────────────────
+
+def handle_info(args: argparse.Namespace) -> int:
+    profile = detect_hardware()
+    slab = resolve_slab(requested_slab=args.slab, profile=profile)
+    model_dir = resolve_model_path(args.models_dir, slab.tier)
+
+    vram_gb = (
+        round(profile.vram_bytes / (1024**3), 2)
+        if profile.vram_bytes is not None
+        else None
+    )
+    ram_gb = round(profile.system_ram_bytes / (1024**3), 2)
+
+    if args.json:
+        payload = {
+            "hardware": {
+                "providers": profile.providers,
+                "system_ram_gb": ram_gb,
+                "vram_gb": vram_gb,
+                "cpu_cores": profile.cpu_cores,
+                "has_avx512_or_arm_neon": profile.has_avx512_or_arm_neon,
+            },
+            "slab": {
+                "requested": args.slab,
+                "resolved_tier": slab.tier,
+                "model_id": slab.model_id,
+                "quantization": slab.quantization,
+                "hidden_dim": slab.hidden_dim,
+                "selected_provider": slab.provider,
+                "model_dir": str(model_dir),
+                "model_dir_exists": (model_dir / "backbone.onnx").exists(),
+            },
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        print("============================================================")
+        print("Gaman AI -- Hardware Profile & Spec Slab Resolution")
+        print("============================================================")
+        print("Hardware Profile:")
+        print(f"  System RAM:        {ram_gb:.1f} GB")
+        print(f"  Dedicated VRAM:    {vram_gb if vram_gb is not None else 'None'}")
+        print(f"  Logical CPU Cores: {profile.cpu_cores}")
+        print(f"  SIMD Acceleration: {profile.has_avx512_or_arm_neon}")
+        print(f"  Providers:         {', '.join(profile.providers)}")
+        print("\nSpec Slab Configuration:")
+        print(f"  Requested Slab:    {args.slab}")
+        print(f"  Resolved Tier:     {slab.tier.upper()}")
+        print(f"  Model ID:          {slab.model_id}")
+        print(f"  Quantization:      {slab.quantization}")
+        print(f"  Hidden Dimension:  {slab.hidden_dim}")
+        print(f"  Selected Provider: {slab.provider}")
+        print(f"  Model Path:        {model_dir} (exists: {(model_dir / 'backbone.onnx').exists()})")
+        print("============================================================")
+    return 0
+
+
 # ─── Argument Parser Construction ────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -450,6 +508,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="models",
         help="Path to models artifact directory (default: 'models').",
+    )
+    parser.add_argument(
+        "--slab",
+        type=str,
+        default="auto",
+        choices=["auto", "small", "base", "large"],
+        help="Target Spec Slab tier (default: 'auto').",
     )
 
     subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
@@ -512,6 +577,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_calibrate.add_argument("--criterion", type=str, default=None, help="Criterion for score primitive")
     p_calibrate.add_argument("--output", type=str, default=None, help="Path to write calibration.json (default: models/calibration.json)")
 
+    # 6. info
+    p_info = subparsers.add_parser("info", help="Print detected hardware topology and active spec slab")
+    p_info.add_argument("--json", action="store_true", help="Output details as JSON")
+
     return parser
 
 
@@ -526,9 +595,12 @@ def main(
         parser.print_help()
         return 0
 
+    if args.subcommand == "info":
+        return handle_info(args)
+
     if engine is None:
         try:
-            engine = GamanEngine(models_dir=args.models_dir)
+            engine = GamanEngine(slab=args.slab, models_dir=args.models_dir)
         except Exception as exc:
             print(f"Error initializing GamanEngine: {exc}", file=sys.stderr)
             return 1

@@ -405,3 +405,34 @@ class TestCalibrateCLI:
         assert exit_code == 1
         captured = capsys.readouterr()
         assert "Dataset not found" in captured.err
+
+
+class TestInfoCLI:
+    """Tests for gaman info subcommand and --slab parameterization."""
+
+    def test_gaman_info_human_readable(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["info"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Hardware Profile & Spec Slab Resolution" in captured.out
+        assert "System RAM:" in captured.out
+        assert "Resolved Tier:" in captured.out
+
+    def test_gaman_info_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["info", "--json"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "hardware" in data
+        assert "slab" in data
+        assert "system_ram_gb" in data["hardware"]
+        assert data["slab"]["resolved_tier"] in ["small", "base", "large"]
+
+    def test_gaman_info_explicit_slab_small(self, capsys: pytest.CaptureFixture[str]) -> None:
+        exit_code = main(["--slab", "small", "info", "--json"])
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["slab"]["requested"] == "small"
+        assert data["slab"]["resolved_tier"] == "small"
+        assert data["slab"]["hidden_dim"] == 768

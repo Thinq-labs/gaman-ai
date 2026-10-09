@@ -79,3 +79,15 @@
 - **Dependencies:** Pure NumPy implementation in `src/calibration.py` with zero runtime dependencies.
 - **CLI Workflow:** `gaman calibrate --data <val.csv> --primitive <choice|noul|score> --target-column <col> --state-column <col>` optimizes $T^*$, reports empirical ECE reduction, and writes to `models/calibration.json`.
 - **Status:** LOCKED.
+
+---
+
+## ADR 010: Automated Hardware Spec Slab Resolution and Dynamic Tiering
+- **Decision:** Implement zero-dependency automated hardware probing (`src/resolver.py`) and dynamic tier dispatch across three canonical slabs (`small`, `base`, `large`):
+  1. **Tier 1 (Edge / CPU Fallback - `small`):** `cross-encoder/nli-deberta-v3-small` (INT8 quantized, ~140MB, 6 layers, 768 hidden dimension, target <20ms on CPU). Dispatched when available RAM < 16GB or running on CPU-only edge hardware.
+  2. **Tier 2 (Pro Workstation / Server - `base`):** `cross-encoder/nli-deberta-v3-base` (FP16 or INT8, ~400MB, 12 layers, 768 hidden dimension, target <10ms on GPU/Apple Silicon). Dispatched when CoreML is present, or CUDA/ROCm GPU has $\ge 4\,\text{GB}$ VRAM, or host RAM $\ge 16\,\text{GB}$.
+  3. **Tier 3 (Datacenter / Dedicated Accelerator - `large`):** `cross-encoder/nli-deberta-v3-large` (FP16, ~800MB, 24 layers, 1024 hidden dimension, target <15ms batch GPU). Dispatched when dedicated CUDA/ROCm VRAM $\ge 8\,\text{GB}$.
+- **Backward Compatibility:** Model resolution checks `models/<tier>/backbone.onnx` first, falling back to flat `models/backbone.onnx` for the `small` tier to maintain 100% backward compatibility with v0.1 model deployments.
+- **Dynamic Hidden Dimensions:** The engine dynamically sets `self.hidden_dim` (768 for small/base, 1024 for large) and shapes `embed(state)` representation vectors accordingly.
+- **Decoupled Diagnostic Tooling:** `gaman info` probes hardware topology directly without instantiating ONNX runtime sessions, guaranteeing instantaneous (<50ms) execution.
+- **Status:** LOCKED.
