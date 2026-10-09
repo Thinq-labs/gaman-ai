@@ -94,15 +94,14 @@ class GamanTokenizer:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def encode(self, text: str) -> dict[str, np.ndarray]:
+    def encode(self, text: str, pair: str | None = None) -> dict[str, np.ndarray]:
         """
-        Tokenize a single string.
-
-        The input ``text`` is expected to be a pre-formatted NLI input string
-        produced by :func:`src.serializer.build_nli_input`.
+        Tokenize a single string or a (premise, hypothesis) sequence pair.
 
         Args:
-            text: Pre-formatted ``"[STATE] ... [QUERY] ..."`` string.
+            text: Main input sequence (e.g. premise / serialized state).
+            pair: Optional second sequence (e.g. hypothesis / query). When provided,
+                  outputs native [SEP] boundaries and token_type_ids (0 for text, 1 for pair).
 
         Returns:
             Dictionary with keys:
@@ -110,20 +109,26 @@ class GamanTokenizer:
                 - ``"attention_mask"`` — shape ``[1, seq_len]``, dtype int64
                 - ``"token_type_ids"`` — shape ``[1, seq_len]``, dtype int64
 
-            ``seq_len`` is the actual (truncated) token count for this string.
+            ``seq_len`` is the actual (truncated) token count for this sequence.
         """
-        enc = self._tokenizer.encode(text)
+        if pair is not None:
+            enc = self._tokenizer.encode(text, pair=pair)
+        else:
+            enc = self._tokenizer.encode(text)
         return self._wrap_single(enc)
 
-    def encode_batch(self, texts: list[str]) -> dict[str, np.ndarray]:
+    def encode_batch(
+        self, inputs: list[str] | list[tuple[str, str]]
+    ) -> dict[str, np.ndarray]:
         """
-        Tokenize a list of strings, padding to the longest in the batch.
+        Tokenize a batch of strings or (premise, hypothesis) pairs, dynamically
+        padding to the longest sequence in the batch.
 
         Used by :meth:`GamanEngine.choice` to batch all K option pairs into
         a single ONNX forward pass (``batch_size = K``).
 
         Args:
-            texts: List of pre-formatted ``"[STATE] ... [QUERY] ..."`` strings.
+            inputs: List of strings OR list of (text, pair) tuples.
 
         Returns:
             Dictionary with keys:
@@ -131,10 +136,10 @@ class GamanTokenizer:
                 - ``"attention_mask"`` — shape ``[N, seq_len]``, dtype int64
                 - ``"token_type_ids"`` — shape ``[N, seq_len]``, dtype int64
 
-            where ``N = len(texts)`` and ``seq_len`` = longest sequence length
+            where ``N = len(inputs)`` and ``seq_len`` = longest sequence length
             in the batch (all shorter sequences are zero-padded).
         """
-        encs = self._tokenizer.encode_batch(texts)
+        encs = self._tokenizer.encode_batch(inputs)
         return {
             "input_ids": np.array([e.ids for e in encs], dtype=np.int64),
             "attention_mask": np.array([e.attention_mask for e in encs], dtype=np.int64),

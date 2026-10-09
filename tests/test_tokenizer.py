@@ -133,6 +133,19 @@ class TestEncode:
         assert result["input_ids"].shape[0] == 1
         assert result["input_ids"].shape[1] > 0
 
+    def test_pair_encoding_token_type_ids(self, tokenizer) -> None:
+        """Verify (premise, hypothesis) encoding outputs correct token_type_ids transition."""
+        premise = "cpu_usage: 98 | memory_usage: 85"
+        hypothesis = "This state corresponds to: scale_up"
+        result = tokenizer.encode(premise, pair=hypothesis)
+        type_ids = result["token_type_ids"][0]
+        # Should have both 0s (premise) and 1s (hypothesis)
+        assert 0 in type_ids
+        assert 1 in type_ids
+        # First token is 0 (CLS) and last non-padded token is 1
+        assert type_ids[0] == 0
+        assert type_ids[-1] == 1
+
 
 # ─── Batch encode ─────────────────────────────────────────────────────────────
 

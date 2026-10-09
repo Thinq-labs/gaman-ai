@@ -146,3 +146,14 @@ def build_nli_input(state: dict[str, Any], query: str) -> str:
     """
     state_str = serialize_state(state)
     return f"[STATE] {state_str} [QUERY] {query}"
+
+
+def build_nli_pair(state: dict[str, Any], query: str) -> tuple[str, str]:
+    """
+    Build the premise and hypothesis pair for cross-encoder tokenization.
+
+    Returns:
+        tuple[str, str]: (premise, hypothesis), where premise is the
+        deterministically serialized state string, and hypothesis is the query string.
+    """
+    return serialize_state(state), query

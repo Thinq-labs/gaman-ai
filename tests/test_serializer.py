@@ -218,3 +218,12 @@ class TestBuildNliInput:
         result = build_nli_input(state, f"This state corresponds to: {option}")
         assert "This state corresponds to: scale_up" in result
         assert result.startswith("[STATE]")
+
+    def test_build_nli_pair(self) -> None:
+        """Verify build_nli_pair returns distinct premise and hypothesis strings."""
+        from src.serializer import build_nli_pair
+        state = {"cpu_usage": 98, "memory_usage": 85}
+        query = "Is CPU overloaded?"
+        premise, hypothesis = build_nli_pair(state, query)
+        assert premise == "cpu_usage: 98 | memory_usage: 85"
+        assert hypothesis == query

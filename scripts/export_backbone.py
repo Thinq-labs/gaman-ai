@@ -46,7 +46,7 @@ import time
 from pathlib import Path
 
 # ─── Constants ──────────────────────────────────────────────────────────────
-DEFAULT_MODEL_ID = "MoritzLaurer/DeBERTa-v3-small-mnli-fever-anli"
+DEFAULT_MODEL_ID = "cross-encoder/nli-deberta-v3-small"
 DEFAULT_OUTPUT_DIR = "models"
 
 # Artifacts to copy from the optimum export directory to the final output dir.
@@ -106,21 +106,50 @@ def parse_args() -> argparse.Namespace:
 # ─── Step 1: Export to ONNX ─────────────────────────────────────────────────
 def export_to_onnx(model_id: str, tmp_dir: Path, opset: int) -> Path:
     """
-    Download model from HF Hub and export to ONNX via optimum.
+    Download model from HF Hub and export to ONNX.
+    If the repository already hosts pre-exported ONNX weights (e.g. cross-encoder/nli-deberta-v3-small),
+    downloads them and tokenizer files directly via huggingface_hub.
+    Otherwise, falls back to optimum.onnxruntime.
 
     Returns the path to the exported FP32 .onnx file inside tmp_dir.
-
-    Raises SystemExit if export dependencies are not installed.
     """
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+
+    # Fast path: check if pre-exported ONNX graph is available on HF Hub
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        api = HfApi()
+        files = api.list_repo_files(model_id)
+        onnx_candidates = ["onnx/model.onnx", "model.onnx"]
+        found_onnx = next((c for c in onnx_candidates if c in files), None)
+        if found_onnx:
+            print(f"  Downloading pre-exported ONNX artifact '{found_onnx}' for '{model_id}'...")
+            downloaded = hf_hub_download(model_id, found_onnx)
+            target = tmp_dir / "model.onnx"
+            shutil.copy2(downloaded, target)
+
+            # Download tokenizer and config artifacts
+            for fname in TOKENIZER_ARTIFACTS:
+                if fname in files:
+                    art = hf_hub_download(model_id, fname)
+                    shutil.copy2(art, tmp_dir / fname)
+
+            elapsed = time.perf_counter() - t0
+            print(f"  [OK] Direct ONNX download done ({elapsed:.1f}s)")
+            size_mb = target.stat().st_size / (1024 * 1024)
+            print(f"  [INFO] FP32 model size: {size_mb:.1f} MB")
+            return target
+    except Exception as exc:
+        print(f"  [INFO] Direct download check skipped ({exc}), falling back to optimum export...")
+
+    # Full export path via optimum
     _check_export_deps()
 
     from optimum.onnxruntime import ORTModelForSequenceClassification  # type: ignore[import]
     from transformers import AutoTokenizer  # type: ignore[import]
 
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    print(f"  Downloading and exporting '{model_id}' to ONNX (opset={opset})...")
-
-    t0 = time.perf_counter()
+    print(f"  Downloading and exporting '{model_id}' to ONNX via optimum (opset={opset})...")
 
     # Export model + bake NLI classification head into ONNX graph
     model = ORTModelForSequenceClassification.from_pretrained(
@@ -135,7 +164,7 @@ def export_to_onnx(model_id: str, tmp_dir: Path, opset: int) -> Path:
     tokenizer.save_pretrained(tmp_dir)
 
     elapsed = time.perf_counter() - t0
-    print(f"  ✓ ONNX export done ({elapsed:.1f}s)")
+    print(f"  [OK] ONNX export done ({elapsed:.1f}s)")
 
     # optimum saves the ONNX as model.onnx; guard against version differences
     fp32_onnx = tmp_dir / "model.onnx"
@@ -147,10 +176,10 @@ def export_to_onnx(model_id: str, tmp_dir: Path, opset: int) -> Path:
                 "Check optimum version compatibility."
             )
         fp32_onnx = candidates[0]
-        print(f"  ℹ Found ONNX at non-standard path: {fp32_onnx.name}")
+        print(f"  [INFO] Found ONNX at non-standard path: {fp32_onnx.name}")
 
     size_mb = fp32_onnx.stat().st_size / (1024 * 1024)
-    print(f"  ℹ FP32 model size: {size_mb:.1f} MB")
+    print(f"  [INFO] FP32 model size: {size_mb:.1f} MB")
     return fp32_onnx
 
 
@@ -175,12 +204,11 @@ def quantize_int8(fp32_path: Path, output_path: Path) -> None:
         model_input=str(fp32_path),
         model_output=str(output_path),
         weight_type=QuantType.QInt8,
-        optimize_model=True,
     )
 
     elapsed = time.perf_counter() - t0
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"  ✓ INT8 quantization done ({elapsed:.1f}s) → {size_mb:.1f} MB")
+    print(f"  [OK] INT8 quantization done ({elapsed:.1f}s) -> {size_mb:.1f} MB")
 
 
 # ─── Step 3: Copy tokenizer artifacts ───────────────────────────────────────
@@ -229,7 +257,7 @@ def write_manifest(
     manifest_path = output_dir / "manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
-    print(f"  ✓ Manifest written → {manifest_path.name}")
+    print(f"  [OK] Manifest written -> {manifest_path.name}")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -258,7 +286,7 @@ def _print_banner(args: argparse.Namespace) -> None:
     quant_label = "disabled (FP32 only)" if args.skip_quantization else "dynamic INT8"
     print()
     print("=" * 62)
-    print("  Gaman AI — Backbone Export Utility")
+    print("  Gaman AI -- Backbone Export Utility")
     print(f"  Model  : {args.model_id}")
     print(f"  Output : {Path(args.output_dir).resolve()}")
     print(f"  INT8   : {quant_label}")
@@ -291,12 +319,12 @@ def main() -> None:
         if args.skip_quantization:
             shutil.copy2(fp32_onnx, final_backbone)
             quantized = False
-            print(f"  ⚠ Quantization skipped. FP32 model saved as backbone.onnx")
+            print(f"  [WARN] Quantization skipped. FP32 model saved as backbone.onnx")
         else:
             if args.keep_fp32:
                 fp32_copy = output_dir / "backbone_fp32.onnx"
                 shutil.copy2(fp32_onnx, fp32_copy)
-                print(f"  ℹ FP32 copy saved → {fp32_copy.name}")
+                print(f"  [INFO] FP32 copy saved -> {fp32_copy.name}")
             quantize_int8(fp32_onnx, final_backbone)
             quantized = True
         print()
@@ -305,9 +333,9 @@ def main() -> None:
         print("[3/4] Copying tokenizer artifacts...")
         copied = copy_artifacts(tmp_dir, output_dir)
         if copied:
-            print(f"  ✓ Copied: {', '.join(copied)}")
+            print(f"  [OK] Copied: {', '.join(copied)}")
         else:
-            print("  ⚠ No tokenizer artifacts found — tokenizer.json may be missing.")
+            print("  [WARN] No tokenizer artifacts found -- tokenizer.json may be missing.")
         print()
 
         # ── Step 4: Write manifest ─────────────────────────────────
@@ -322,11 +350,11 @@ def main() -> None:
 
     total_elapsed = time.perf_counter() - total_start
     print("=" * 62)
-    print(f"  ✓ Export complete in {total_elapsed:.1f}s")
+    print(f"  [OK] Export complete in {total_elapsed:.1f}s")
     print(f"  Artifacts: {output_dir.resolve()}")
     print("=" * 62)
     print()
-    print("  Next step — run inference:")
+    print("  Next step -- run inference:")
     print("    python -c \"from src.engine import GamanEngine; e = GamanEngine()\"")
     print()
 
