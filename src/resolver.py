@@ -49,6 +49,12 @@ SLAB_DEFINITIONS: dict[str, dict[str, Any]] = {
 }
 
 
+class ModelNotFoundError(FileNotFoundError):
+    """Raised when a requested or resolved Spec Slab model tier is missing from disk."""
+
+    pass
+
+
 @dataclass(frozen=True)
 class HardwareProfile:
     """Hardware profile discovered at runtime."""

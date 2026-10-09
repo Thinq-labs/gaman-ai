@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Generator, Sequence
 
@@ -101,6 +102,95 @@ def handle_score(args: argparse.Namespace, engine: GamanEngine) -> int:
     else:
         print(f"Score:   {result['value']:.4f}")
         print(f"Latency: {result['latency_ms']:.2f}ms")
+    return 0
+
+
+def handle_predict(args: argparse.Namespace, engine: GamanEngine) -> int:
+    state = parse_state_input(args.state)
+    try:
+        result = engine.predict(state, head_name=args.head)
+    except Exception as exc:
+        print(f"Error during prediction: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Head:        {result['head']}")
+        print(f"Selection:   {result['selection']}")
+        print(f"Confidence:  {result['confidence']:.4f}")
+        print(f"Latency:     {result['latency_ms']:.2f}ms")
+    return 0
+
+
+def handle_fit(args: argparse.Namespace, engine: GamanEngine) -> int:
+    from src.heads import fit_adapter
+
+    t0 = time.perf_counter()
+    data_path = Path(args.data)
+    if not data_path.exists():
+        print(f"Error: Dataset not found at: {data_path}", file=sys.stderr)
+        return 1
+
+    states: list[dict[str, Any]] = []
+    labels: list[str] = []
+
+    with open(data_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if args.target_column not in row:
+                print(f"Error: Target column '{args.target_column}' not found in CSV", file=sys.stderr)
+                return 1
+            lbl = row[args.target_column].strip()
+            labels.append(lbl)
+
+            if args.state_column:
+                if args.state_column not in row:
+                    print(f"Error: State column '{args.state_column}' not found in CSV", file=sys.stderr)
+                    return 1
+                raw_st = row[args.state_column]
+                states.append(parse_state_input(raw_st))
+            else:
+                row_copy = {k: v for k, v in row.items() if k != args.target_column}
+                states.append(row_copy)
+
+    if not states:
+        print("Error: Dataset is empty.", file=sys.stderr)
+        return 1
+
+    embeddings = engine.embed_batch(states)
+
+    head = fit_adapter(
+        embeddings=embeddings,
+        labels=labels,
+        name=args.name,
+        l2_reg=args.l2_reg,
+    )
+
+    if args.output:
+        save_path = Path(args.output)
+    else:
+        save_path = engine.models_dir / "heads" / f"{args.name}.json"
+
+    head.save(save_path)
+    elapsed = time.perf_counter() - t0
+
+    preds = head.predict_proba(embeddings)
+    top_indices = np.argmax(preds, axis=1)
+    train_correct = sum(1 for i, idx in enumerate(top_indices) if head.classes[idx] == labels[i])
+    train_acc = train_correct / len(labels)
+
+    print("=" * 60)
+    print(f"Gaman AI -- Linear Adapter Head Fitted: '{head.name}'")
+    print("=" * 60)
+    print(f"  Samples (N):        {len(labels)}")
+    print(f"  Classes (K):        {len(head.classes)} ({', '.join(head.classes)})")
+    print(f"  Hidden Dim (d):     {head.hidden_dim}")
+    print(f"  L2 Regularization:  {args.l2_reg}")
+    print(f"  Training Accuracy:  {train_acc * 100:.2f}%")
+    print(f"  Fitting Time:       {elapsed:.2f}s")
+    print(f"  Saved Head:         {save_path}")
+    print("=" * 60)
     return 0
 
 
@@ -581,6 +671,41 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = subparsers.add_parser("info", help="Print detected hardware topology and active spec slab")
     p_info.add_argument("--json", action="store_true", help="Output details as JSON")
 
+    # 7. fit
+    p_fit = subparsers.add_parser("fit", help="Fit a lightweight linear adapter head on labeled data")
+    p_fit.add_argument("--data", type=str, required=True, help="Path to input dataset (CSV)")
+    p_fit.add_argument(
+        "--state-column",
+        type=str,
+        default=None,
+        help="Column to extract state from (default: all row columns except target)",
+    )
+    p_fit.add_argument(
+        "--target-column",
+        type=str,
+        required=True,
+        help="Column containing target category label",
+    )
+    p_fit.add_argument("--name", type=str, required=True, help="Identifier name for the adapter head")
+    p_fit.add_argument(
+        "--l2-reg",
+        type=float,
+        default=1.0,
+        help="L2 regularization strength (default: 1.0)",
+    )
+    p_fit.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Custom output path for head json (default: models/heads/<name>.json)",
+    )
+
+    # 8. predict
+    p_pred = subparsers.add_parser("predict", help="Predict using a custom linear adapter head")
+    p_pred.add_argument("--state", type=str, required=True, help="Input state (JSON or text)")
+    p_pred.add_argument("--head", type=str, required=True, help="Adapter head name")
+    p_pred.add_argument("--json", action="store_true", help="Output raw schema JSON")
+
     return parser
 
 
@@ -615,6 +740,10 @@ def main(
         return handle_batch(args, engine)
     elif args.subcommand == "calibrate":
         return handle_calibrate(args, engine)
+    elif args.subcommand == "fit":
+        return handle_fit(args, engine)
+    elif args.subcommand == "predict":
+        return handle_predict(args, engine)
 
     return 0
 

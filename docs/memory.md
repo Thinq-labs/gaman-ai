@@ -1,28 +1,33 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-09T22:52:00+05:30
-**Current Status:** Gaman AI v0.2 Pillar 2 Automated Spec Slab Resolver Complete. 133/133 tests passing.
+**Last Updated:** 2026-10-09T23:11:00+05:30
+**Current Status:** Gaman AI v0.2 Pillar 3 Lightweight Adapters & Multi-Tier Model Export Complete. 146/146 tests passing.
 
 ## Active Context
-- **Pillar 2: Automated Spec Slab Resolver Complete:**
-  - **Hardware Detection (`src/resolver.py`):** Zero-dependency hardware probing (`detect_hardware()`, `HardwareProfile`). Discovers execution providers via `ort.get_available_providers()`, inspects system RAM via OS APIs (`GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux, `sysctl hw.memsize` on Darwin), counts logical cores, and probes SIMD (AVX512/NEON).
-  - **Hierarchical Tier Dispatch:**
-    - `large`: CUDA/ROCm execution provider with $\ge 8\,\text{GB}$ VRAM. Model: `cross-encoder/nli-deberta-v3-large` (1024 hidden dimension).
-    - `base`: CoreML or CUDA/ROCm with $\ge 4\,\text{GB}$ VRAM, or host RAM $\ge 16\,\text{GB}$. Model: `cross-encoder/nli-deberta-v3-base` (768 hidden dimension).
-    - `small`: Edge/CPU fallback when host RAM $< 16\,\text{GB}$ or on CPU-only edge systems. Model: `cross-encoder/nli-deberta-v3-small` (768 hidden dimension).
-  - **Backward-Compatible Model Resolution:** `resolve_model_path()` checks `models/<tier>/backbone.onnx` first, falling back to flat `models/backbone.onnx` for `small` tier to maintain 100% compatibility with v0.1 model deployments.
-  - **Dynamic Dimensioning in Engine (`src/engine.py`):** Engine dynamically initializes with `slab` tier and resolved `hidden_dim` (768 vs 1024), dynamically selecting execution providers. `embed(state)` emits representation vector of shape `(hidden_dim,)`.
-  - **Decoupled Diagnostic Tooling (`src/cli.py`):** Added `gaman info` subcommand (instantaneous <50ms, no ONNX session overhead) with human-readable and `--json` outputs, and added global `--slab [auto|small|base|large]` flag.
+- **Pillar 3: Lightweight Adapters & Multi-Tier Export Complete:**
+  - **Multi-Tier Export Tooling (`scripts/export_backbone.py`):** Added `--tier [small|base|large]` flag mapping to canonical HF checkpoints and output directories (`models/small/`, `models/base/`, `models/large/`). Cleaned non-ASCII characters to support Windows CP1252 consoles.
+  - **ModelNotFoundError Guidance:** Implemented `ModelNotFoundError(FileNotFoundError)` in `src/resolver.py` and `src/engine.py`. Emits copy-paste remediation instructions: `Run: python scripts/export_backbone.py --tier {tier}`.
+  - **Lightweight Linear Adapters (`src/heads.py`):**
+    - `CustomLinearHead`: stores weight matrix $W \in \mathbb{R}^{K \times d}$, bias vector $b \in \mathbb{R}^K$, and class mappings. Pure NumPy Softmax inference with $< 10\,\mu\text{s}$ latency overhead.
+    - `fit_adapter`: Closed-form analytical Ridge regression solver ($\tilde{W} = (\tilde{Z}^T \tilde{Z} + \lambda I')^{-1} \tilde{Z}^T Y$) in pure NumPy. Executes in $< 20\,\text{ms}$ on CPU for $N \le 2,000$ samples.
+    - JSON serialization and deserialization at `models/heads/<name>.json`.
+  - **Engine Runtime Integration (`src/engine.py`):**
+    - `embed_batch`: vectorized batch embedding extraction with bit-for-bit identity with `embed`.
+    - `predict(state, head_name)`: dynamic head resolution, in-memory caching, dimension validation, and inference reporting.
+  - **CLI Commands (`src/cli.py`):**
+    - `gaman fit`: fits linear adapter from CSV dataset and reports empirical metrics.
+    - `gaman predict`: evaluates single state across trained adapter head with human-readable and `--json` outputs.
 
 ## Verification Metrics
-- Total Tests: **133 passed in 18.42s** (0 skipped, 0 failed).
-- Resolver Tests: **12 passed** (`tests/test_resolver.py`).
-- CLI Tests: **19 passed** (`tests/test_cli.py`).
-- Real System Diagnostic: Host (Windows 11, 13.8 GB RAM, 8 logical cores, CPUExecutionProvider) cleanly auto-resolved to `small` tier.
+- Total Tests: **146 passed in 22.62s** (0 skipped, 0 failed).
+- Adapter Tests: **10 passed** (`tests/test_heads.py`).
+- CLI Tests: **22 passed** (`tests/test_cli.py`).
+- Analytical Fitting Benchmark: $N = 2,000$ in $\mathbb{R}^{768}$ fits in **16.8 ms** on CPU (< 1.0s requirement).
+- Adapter Forward Pass Overhead: **< 5.0 µs** (< 10 µs requirement).
 
 ## Key Architectural Invariants
 - **Zero torch in runtime:** strictly `onnxruntime`, `tokenizers`, `numpy`.
-- **Zero psutil:** hardware inspection via stdlib / native platform ctypes and procfs.
-- **Shift Invariance:** All three primitives (`choice`, `noul`, `score`) are mathematically invariant to arbitrary constant logit shifts.
+- **Zero scikit-learn in runtime:** closed-form normal equations solved in pure NumPy.
+- **Bit-For-Bit Embedding Identity:** `embed_batch(states)[i] == embed(states[i])`.
+- **Rank Preservation & Shift Invariance:** Universal primitives preserve mathematical invariants.
 - **Backward Compatibility:** Single-model flat deployments (`models/backbone.onnx`) continue to run seamlessly without relocation.
-- **Rank Preservation:** $\arg\max_k(z_k / T) = \arg\max_k(z_k)$ strictly preserved.

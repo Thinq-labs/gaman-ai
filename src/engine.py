@@ -20,7 +20,8 @@ import numpy as np
 import onnxruntime as ort
 
 from src.calibration import load_calibration
-from src.resolver import SlabConfig, resolve_model_path, resolve_slab
+from src.heads import CustomLinearHead
+from src.resolver import ModelNotFoundError, SlabConfig, resolve_model_path, resolve_slab
 from src.serializer import build_nli_pair, serialize_state
 from src.tokenizer import GamanTokenizer
 
@@ -74,9 +75,9 @@ class GamanEngine:
         self.config_path = self.models_dir / "config.json"
 
         if not self.model_path.exists():
-            raise FileNotFoundError(
-                f"Model artifact not found for tier '{self.slab_config.tier}' at '{self.model_path}'.\n"
-                f"Run `python scripts/export_backbone.py --model_id {self.slab_config.model_id}` to export and quantize."
+            raise ModelNotFoundError(
+                f"Model tier '{self.slab_config.tier}' not found in {self.models_dir}. "
+                f"Run: python scripts/export_backbone.py --tier {self.slab_config.tier}"
             )
 
         # 1. Load Model Config & Metadata dynamically
@@ -101,6 +102,9 @@ class GamanEngine:
         self.temp_noul: float = 1.0
         self.temp_score: float = 1.0
         self.load_calibration()
+
+        # 6. Lightweight Linear Adapter Heads Cache
+        self._loaded_heads: dict[str, CustomLinearHead] = {}
 
     def load_calibration(self, calibration_path: str | Path | None = None) -> None:
         """
@@ -311,3 +315,65 @@ class GamanEngine:
         repeats = int(np.ceil(self.hidden_dim / len(logits)))
         tiled = np.tile(logits, repeats)[: self.hidden_dim]
         return tiled.astype(np.float32)
+
+    def embed_batch(self, states: list[dict[str, Any]]) -> np.ndarray:
+        """
+        Extract batch representation vectors for pluggable adapter heads (ADR 5).
+
+        Guarantees that embed_batch(states)[i] is strictly bit-for-bit identical
+        to embed(states[i]).
+
+        Args:
+            states: List of state dictionaries.
+
+        Returns:
+            NumPy 2D array of shape (N, hidden_dim) and dtype float32.
+        """
+        if not states:
+            return np.empty((0, self.hidden_dim), dtype=np.float32)
+        return np.vstack([self.embed(s) for s in states]).astype(np.float32)
+
+    def predict(self, state: dict[str, Any], head_name: str) -> dict[str, Any]:
+        """
+        Run inference using a trained lightweight linear adapter head.
+
+        Args:
+            state: Arbitrary JSON dictionary representing current state.
+            head_name: Identifier of the saved head (in models/heads/<name>.json).
+
+        Returns:
+            dict matching Universal API Contract:
+            {"primitive": "choice", "head": str, "selection": str, "confidence": float, "probabilities": dict, "latency_ms": float}
+        """
+        t0 = time.perf_counter()
+        if head_name not in self._loaded_heads:
+            candidate1 = self.models_dir / "heads" / f"{head_name}.json"
+            candidate2 = Path("models") / "heads" / f"{head_name}.json"
+            if candidate1.exists():
+                head_file = candidate1
+            elif candidate2.exists():
+                head_file = candidate2
+            else:
+                raise FileNotFoundError(
+                    f"Adapter head '{head_name}' not found. Searched '{candidate1}' and '{candidate2}'."
+                )
+            self._loaded_heads[head_name] = CustomLinearHead.load(head_file)
+
+        head = self._loaded_heads[head_name]
+        if head.hidden_dim != self.hidden_dim:
+            raise ValueError(
+                f"Head '{head_name}' expects hidden_dim={head.hidden_dim}, but engine is {self.hidden_dim}"
+            )
+
+        z = self.embed(state)
+        res = head.predict(z)
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+
+        return {
+            "primitive": "choice",
+            "head": head_name,
+            "selection": res["selection"],
+            "confidence": res["confidence"],
+            "probabilities": res["probabilities"],
+            "latency_ms": float(round(latency_ms, 2)),
+        }

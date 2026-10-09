@@ -436,3 +436,118 @@ class TestInfoCLI:
         assert data["slab"]["requested"] == "small"
         assert data["slab"]["resolved_tier"] == "small"
         assert data["slab"]["hidden_dim"] == 768
+
+
+class TestFitAndPredictCLI:
+    """Tests for gaman fit and gaman predict commands."""
+
+    def test_fit_and_predict_pipeline(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        shared_engine: GamanEngine,
+    ) -> None:
+        csv_file = tmp_path / "train.csv"
+        head_file = tmp_path / "heads" / "issue_router.json"
+        head_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(csv_file, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["text", "label"])
+            writer.writeheader()
+            writer.writerow({"text": "network connection reset", "label": "network"})
+            writer.writerow({"text": "dns resolution timeout", "label": "network"})
+            writer.writerow({"text": "database disk full", "label": "storage"})
+            writer.writerow({"text": "cannot write to volume", "label": "storage"})
+
+        # 1. Fit adapter head
+        exit_code = main(
+            [
+                "fit",
+                "--data", str(csv_file),
+                "--state-column", "text",
+                "--target-column", "label",
+                "--name", "issue_router",
+                "--output", str(head_file),
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Linear Adapter Head Fitted: 'issue_router'" in captured.out
+        assert "Samples (N):        4" in captured.out
+        assert head_file.exists()
+
+        # Cache the head in engine for predict test
+        from src.heads import CustomLinearHead
+        shared_engine._loaded_heads["issue_router"] = CustomLinearHead.load(head_file)
+
+        # 2. Predict human-readable
+        exit_code = main(
+            [
+                "predict",
+                "--state", '{"text": "network connection reset"}',
+                "--head", "issue_router",
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Head:        issue_router" in captured.out
+        assert "Selection:   network" in captured.out
+        assert "Confidence:  " in captured.out
+
+        # 3. Predict JSON output
+        exit_code = main(
+            [
+                "predict",
+                "--state", '{"text": "database disk full"}',
+                "--head", "issue_router",
+                "--json",
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        pred_json = json.loads(captured.out)
+        assert pred_json["primitive"] == "choice"
+        assert pred_json["head"] == "issue_router"
+        assert pred_json["selection"] == "storage"
+        assert "confidence" in pred_json
+        assert "probabilities" in pred_json
+        assert "latency_ms" in pred_json
+
+    def test_fit_missing_dataset(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        shared_engine: GamanEngine,
+    ) -> None:
+        exit_code = main(
+            [
+                "fit",
+                "--data", "nonexistent.csv",
+                "--target-column", "label",
+                "--name", "dummy",
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "Dataset not found" in captured.err
+
+    def test_predict_missing_head(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        shared_engine: GamanEngine,
+    ) -> None:
+        exit_code = main(
+            [
+                "predict",
+                "--state", '{"msg": "hi"}',
+                "--head", "nonexistent_head_xyz",
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "Error during prediction" in captured.err
+

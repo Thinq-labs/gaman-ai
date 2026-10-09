@@ -57,3 +57,21 @@
   - [x] `gaman info` diagnostic subcommand with human-readable and `--json` outputs.
 - [x] Write comprehensive unit & integration tests in `tests/test_resolver.py` and `tests/test_cli.py`.
 - [x] Record ADR 010 in `docs/adr.md`.
+
+---
+
+## v0.2 - Pillar 3: Lightweight Adapters & Multi-Tier Model Export
+- [x] Enhance `scripts/export_backbone.py` with `--tier [small|base|large]` multi-tier export tooling.
+- [x] Implement friendly `ModelNotFoundError(FileNotFoundError)` guidance on missing model assets.
+- [x] Implement `src/heads.py`:
+  - [x] `CustomLinearHead` with pure NumPy forward pass and Softmax inference (< 10µs latency).
+  - [x] `fit_adapter`: Closed-form analytical Ridge regression solver for $N \le 2,000$ samples in < 1.0s.
+  - [x] JSON head serialization and deserialization at `models/heads/<name>.json`.
+- [x] Integrate adapters into `src/engine.py`:
+  - [x] Add `embed_batch` method with bit-for-bit consistency with `embed`.
+  - [x] Add `predict(state, head_name)` method with automatic head loading and caching.
+- [x] Integrate adapter workflows into `src/cli.py`:
+  - [x] `gaman fit --data <csv> --state-column <col> --target-column <col> --name <name> [--l2-reg 1.0]`.
+  - [x] `gaman predict --state '<json>' --head <name> [--json]`.
+- [x] Write comprehensive unit and integration tests in `tests/test_heads.py` and `tests/test_cli.py`.
+- [x] Record ADR 011 in `docs/adr.md`.

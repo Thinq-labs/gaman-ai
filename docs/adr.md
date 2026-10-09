@@ -91,3 +91,23 @@
 - **Dynamic Hidden Dimensions:** The engine dynamically sets `self.hidden_dim` (768 for small/base, 1024 for large) and shapes `embed(state)` representation vectors accordingly.
 - **Decoupled Diagnostic Tooling:** `gaman info` probes hardware topology directly without instantiating ONNX runtime sessions, guaranteeing instantaneous (<50ms) execution.
 - **Status:** LOCKED.
+
+---
+
+## ADR 011: Analytical Linear Adapters for Custom Domain Taxonomies
+- **Decision:** Implement pluggable lightweight classification heads (`src/heads.py`) operating on frozen backbone representations ($Z \in \mathbb{R}^d$, where $d=768$ for small/base and $d=1024$ for large).
+- **Mathematical Formulation:**
+  - Forward Pass: $z = Z W^T + b$, followed by standard numerically stable Softmax:
+    $$p_k = \frac{\exp(z_k - \max(z))}{\sum_j \exp(z_j - \max(z))}$$
+  - Fitting Formulation: Closed-form $L_2$-regularized Ridge regression in augmented space $\tilde{Z} = [Z, \mathbf{1}] \in \mathbb{R}^{N \times (d+1)}$:
+    $$\tilde{W}^* = (\tilde{Z}^T \tilde{Z} + \lambda I')^{-1} \tilde{Z}^T Y$$
+    where $Y \in \{0, 1\}^{N \times K}$ is the one-hot target matrix and $I'_{d+1, d+1} = 0$ (unpenalized intercept).
+  - Solver: Pure NumPy via `np.linalg.solve` with `np.linalg.pinv` fallback. Zero Scikit-Learn or PyTorch dependencies at runtime.
+- **Performance Characteristics:**
+  - Fitting Latency: $< 1.0\text{s}$ on CPU for $N \le 2,000$ samples (empirically $< 20\,\text{ms}$ on modern CPUs).
+  - Inference Latency: $< 10\,\mu\text{s}$ forward pass overhead on top of the backbone embedding.
+- **Storage & Artifacts:** Serialized as clean JSON at `models/heads/<name>.json` containing `name`, `classes`, `hidden_dim`, `weights`, and `bias`.
+- **CLI Workflow:**
+  - Fit: `gaman fit --data <data.csv> --state-column <col> --target-column <col> --name <head_name> [--l2-reg 1.0]`
+  - Predict: `gaman predict --state '<json>' --head <head_name> [--json]`
+- **Status:** LOCKED.

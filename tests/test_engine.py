@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.engine import GamanEngine
+from src.engine import GamanEngine, ModelNotFoundError
 
 MODELS_DIR = Path("models")
 BACKBONE_ONNX = MODELS_DIR / "backbone.onnx"
@@ -30,7 +30,7 @@ class TestEngineInit:
     """Verifies initialization and hardware dispatch."""
 
     def test_missing_model_raises_file_not_found(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError, match="Model artifact not found"):
+        with pytest.raises(ModelNotFoundError, match="Model tier 'small' not found in"):
             GamanEngine(models_dir=tmp_path)
 
     @_requires_model

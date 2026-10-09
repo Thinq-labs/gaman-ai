@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gaman AI — Backbone Export Utility
+Gaman AI -- Backbone Export Utility
 ====================================
 Downloads a pre-trained Hugging Face NLI encoder, exports it to ONNX (FP32),
 applies dynamic INT8 quantization, and saves all inference artifacts to models/.
@@ -10,8 +10,13 @@ These packages are hard-banned from src/ (the inference runtime).
 
 Usage
 -----
-    # Default: DeBERTa-v3-small NLI → models/
+    # Default: DeBERTa-v3-small NLI -> models/
     python scripts/export_backbone.py
+
+    # Spec Slab tier export
+    python scripts/export_backbone.py --tier small
+    python scripts/export_backbone.py --tier base
+    python scripts/export_backbone.py --tier large
 
     # Custom model
     python scripts/export_backbone.py --model_id answerdotai/ModernBERT-small
@@ -27,14 +32,14 @@ Usage
 
 Output Artifacts (in --output_dir)
 -----------------------------------
-    backbone.onnx           — INT8 quantized model (primary runtime artifact)
-    backbone_fp32.onnx      — FP32 model (only with --keep_fp32)
-    tokenizer.json          — HF fast tokenizer
+    backbone.onnx           - INT8 quantized model (primary runtime artifact)
+    backbone_fp32.onnx      - FP32 model (only with --keep_fp32)
+    tokenizer.json          - HF fast tokenizer
     tokenizer_config.json
     special_tokens_map.json
-    config.json             — Model config (num_labels, label2id, id2label)
-    spm.model               — SentencePiece vocab (DeBERTa)
-    manifest.json           — Export provenance record
+    config.json             - Model config (num_labels, label2id, id2label)
+    spm.model               - SentencePiece vocab (DeBERTa)
+    manifest.json           - Export provenance record
 """
 
 import argparse
@@ -48,6 +53,24 @@ from pathlib import Path
 # ─── Constants ──────────────────────────────────────────────────────────────
 DEFAULT_MODEL_ID = "cross-encoder/nli-deberta-v3-small"
 DEFAULT_OUTPUT_DIR = "models"
+
+TIER_CONFIGS = {
+    "small": {
+        "model_id": "cross-encoder/nli-deberta-v3-small",
+        "output_dir": "models/small",
+        "quantize": True,
+    },
+    "base": {
+        "model_id": "cross-encoder/nli-deberta-v3-base",
+        "output_dir": "models/base",
+        "quantize": True,
+    },
+    "large": {
+        "model_id": "cross-encoder/nli-deberta-v3-large",
+        "output_dir": "models/large",
+        "quantize": True,
+    },
+}
 
 # Artifacts to copy from the optimum export directory to the final output dir.
 # Listed in priority order; missing files are silently skipped.
@@ -71,6 +94,13 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        "--tier",
+        type=str,
+        choices=["small", "base", "large"],
+        default=None,
+        help="Spec Slab tier to export ('small', 'base', 'large'). Sets default model_id and output_dir.",
     )
     parser.add_argument(
         "--model_id",
@@ -100,7 +130,14 @@ def parse_args() -> argparse.Namespace:
         default=17,
         help="ONNX opset version for export. Default: 17",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.tier:
+        tier_cfg = TIER_CONFIGS[args.tier]
+        if args.model_id == DEFAULT_MODEL_ID:
+            args.model_id = tier_cfg["model_id"]
+        if args.output_dir == DEFAULT_OUTPUT_DIR:
+            args.output_dir = tier_cfg["output_dir"]
+    return args
 
 
 # ─── Step 1: Export to ONNX ─────────────────────────────────────────────────
