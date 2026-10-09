@@ -1,7 +1,7 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-10T00:38:00+05:30
-**Current Status:** Gaman AI v0.2 GitHub Actions CI Matrix Fixed & Cleaned. 156/156 tests passing. Commit ca4e5d0.
+**Last Updated:** 2026-10-10T01:04:00+05:30
+**Current Status:** Gaman AI v0.2 GitHub Actions CI Matrix Fixed across all 9 OS/Python targets (Ubuntu, Windows, macOS). Commit 5dcb2c1.
 
 ## Active Context
 - **Zero-Clone Pip Distribution & Auto-Weights Downloader:**
@@ -33,3 +33,8 @@
 - **Cross-Platform Shell Parity:** Added `defaults.run.shell: bash` to `.github/workflows/ci.yml` so runner steps execute uniformly across Linux, macOS, and Windows.
 - **Dedicated CI Pre-flight Script:** Created `scripts/ci_prepare_model.py` to safely inspect existing cached weights and invoke `scripts/export_backbone.py --tier small` without fragile in-line shell chain logic.
 - **Linter & Formatting Hygiene:** Fixed 44 Ruff lint violations across `src/`, `tests/`, and `scripts/` (unused imports, file context managers, generator expressions, ternary conversions). Clean 0-error Ruff check across entire repo.
+
+## macOS CoreML Slab Resolution Fix (5dcb2c1)
+- **Problem:** GitHub macOS runners have CoreML available in ONNX Runtime, causing `resolve_slab("auto")` to select tier `base`. In CI, preflight had only populated `models/small/backbone.onnx`, throwing `ModelNotFoundError: Model tier 'base' not found in models/base`.
+- **Solution:** `scripts/ci_prepare_model.py` now exports to root `models/backbone.onnx` and guarantees both `models/small/` and `models/base/` tiers are populated.
+- **Test Resilience:** In `tests/test_engine.py`, `test_missing_model_raises_file_not_found` explicitly verifies `slab="small"` as well as auto-resolved tiers matching `r"Model tier '(small|base|large)' not found in"`.
