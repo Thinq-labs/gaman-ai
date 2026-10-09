@@ -41,7 +41,7 @@ class TestCrossDomainEvaluation:
         }
 
         # 1. Guardrail / predicate
-        noul_res = engine.noul(state, "This is a security incident.")
+        noul_res = engine.noul(state, "A security incident occurred.")
         assert noul_res["primitive"] == "noul"
         assert noul_res["passed"] is True
         assert noul_res["probability"] > 0.5

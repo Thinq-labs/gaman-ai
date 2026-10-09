@@ -226,12 +226,13 @@ class GamanEngine:
         premise, hypothesis = build_nli_pair(state, hypothesis)
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
-        logits = self._forward(enc)  # [1, num_labels]
-        logit = float(logits[0, self.entailment_idx])
+        logits = self._forward(enc)[0]  # [num_labels]
 
-        # Temperature-scaled Sigmoid probability
-        scaled_logit = logit / self.temp_noul
-        prob = 1.0 / (1.0 + float(np.exp(-scaled_logit)))
+        # Shift-invariant 3-class normalized Softmax entailment probability
+        scaled_logits = logits / self.temp_noul
+        exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
+        probs = exp_logits / np.sum(exp_logits)
+        prob = float(probs[self.entailment_idx])
         passed = bool(prob > 0.5)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -258,12 +259,13 @@ class GamanEngine:
         premise, hypothesis = build_nli_pair(state, criterion)
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
-        logits = self._forward(enc)  # [1, num_labels]
-        logit = float(logits[0, self.entailment_idx])
+        logits = self._forward(enc)[0]  # [num_labels]
 
-        # Temperature-scaled bounded scalar [0.0, 1.0] via Sigmoid
-        scaled_logit = logit / self.temp_score
-        val = 1.0 / (1.0 + float(np.exp(-scaled_logit)))
+        # Shift-invariant 3-class normalized Softmax continuous evaluation
+        scaled_logits = logits / self.temp_score
+        exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
+        probs = exp_logits / np.sum(exp_logits)
+        val = float(probs[self.entailment_idx])
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         return {

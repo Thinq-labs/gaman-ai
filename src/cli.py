@@ -234,6 +234,20 @@ def handle_batch(args: argparse.Namespace, engine: GamanEngine) -> int:
 
 # ─── Calibration Handler ─────────────────────────────────────────────────────
 
+def _chunked_generator(
+    gen: Generator[dict[str, Any], None, None], chunk_size: int = 32
+) -> Generator[list[dict[str, Any]], None, None]:
+    """Yield chunks of rows to prevent high memory usage on large datasets."""
+    chunk: list[dict[str, Any]] = []
+    for item in gen:
+        chunk.append(item)
+        if len(chunk) == chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
 def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
     data_path = Path(args.data)
     if not data_path.exists():
@@ -242,23 +256,20 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
 
     suffix = data_path.suffix.lower()
     if suffix == ".csv":
-        rows = list(_stream_csv_rows(data_path))
+        row_gen = _stream_csv_rows(data_path)
     elif suffix in (".jsonl", ".json"):
-        rows = list(_stream_jsonl_rows(data_path))
+        row_gen = _stream_jsonl_rows(data_path)
     else:
         print(f"Error: Unsupported format '{suffix}'. Use .csv or .jsonl", file=sys.stderr)
-        return 1
-
-    if not rows:
-        print("Error: Dataset is empty.", file=sys.stderr)
         return 1
 
     primitive = args.primitive
     target_col = args.target_column
     state_col = args.state_column
 
-    all_logits: list[Any] = []
-    all_targets: list[int] = []
+    chunk_logits: list[np.ndarray] = []
+    chunk_targets: list[np.ndarray] = []
+    total_samples = 0
 
     if primitive == "choice":
         if not args.options:
@@ -266,32 +277,41 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
             return 1
         options = _parse_options_list(args.options)
         clean_options = [opt.replace("_", " ") for opt in options]
+        k_options = len(clean_options)
 
-        for idx, row in enumerate(rows):
-            if target_col not in row:
-                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
-                return 1
-            target_raw = str(row[target_col]).strip()
-            if target_raw in options:
-                target_idx = options.index(target_raw)
-            else:
-                try:
-                    target_idx = int(target_raw)
-                except ValueError:
-                    print(
-                        f"Error: Target value '{target_raw}' does not match any options: {options}",
-                        file=sys.stderr,
-                    )
+        for chunk in _chunked_generator(row_gen, chunk_size=16):
+            pairs_to_encode: list[tuple[str, str]] = []
+            targets_chunk: list[int] = []
+
+            for row in chunk:
+                if target_col not in row:
+                    print(f"Error: Target column '{target_col}' not found in row.", file=sys.stderr)
                     return 1
+                target_raw = str(row[target_col]).strip()
+                if target_raw in options:
+                    target_idx = options.index(target_raw)
+                else:
+                    try:
+                        target_idx = int(target_raw)
+                    except ValueError:
+                        print(
+                            f"Error: Target value '{target_raw}' does not match options: {options}",
+                            file=sys.stderr,
+                        )
+                        return 1
 
-            state = _extract_state(row, state_col)
-            premise = serialize_state(state)
-            pairs = [(premise, f"The decision is to {opt}.") for opt in clean_options]
-            batch_enc = engine.tokenizer.encode_batch(pairs)
+                state = _extract_state(row, state_col)
+                premise = serialize_state(state)
+                for opt in clean_options:
+                    pairs_to_encode.append((premise, f"The decision is to {opt}."))
+                targets_chunk.append(target_idx)
+
+            batch_enc = engine.tokenizer.encode_batch(pairs_to_encode)
             logits = engine._forward(batch_enc)
-            entailment_logits = logits[:, engine.entailment_idx]
-            all_logits.append(entailment_logits)
-            all_targets.append(target_idx)
+            entailment_logits = logits[:, engine.entailment_idx].reshape(len(chunk), k_options)
+            chunk_logits.append(entailment_logits.astype(np.float32))
+            chunk_targets.append(np.array(targets_chunk, dtype=np.int64))
+            total_samples += len(chunk)
 
     elif primitive == "noul":
         if not args.predicate:
@@ -299,47 +319,65 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
             return 1
         hypothesis = engine._normalize_predicate(args.predicate)
 
-        for idx, row in enumerate(rows):
-            if target_col not in row:
-                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
-                return 1
-            target_raw = str(row[target_col]).strip().lower()
-            target_val = 1 if target_raw in ("1", "true", "yes", "pass", "passed") else 0
+        for chunk in _chunked_generator(row_gen, chunk_size=32):
+            pairs_to_encode = []
+            targets_chunk = []
 
-            state = _extract_state(row, state_col)
-            premise, hyp = build_nli_pair(state, hypothesis)
-            enc = engine.tokenizer.encode(premise, pair=hyp)
-            logits = engine._forward(enc)
-            logit = float(logits[0, engine.entailment_idx])
-            all_logits.append(logit)
-            all_targets.append(target_val)
+            for row in chunk:
+                if target_col not in row:
+                    print(f"Error: Target column '{target_col}' not found in row.", file=sys.stderr)
+                    return 1
+                target_raw = str(row[target_col]).strip().lower()
+                target_val = 1 if target_raw in ("1", "true", "yes", "pass", "passed") else 0
+
+                state = _extract_state(row, state_col)
+                premise, hyp = build_nli_pair(state, hypothesis)
+                pairs_to_encode.append((premise, hyp))
+                targets_chunk.append(target_val)
+
+            batch_enc = engine.tokenizer.encode_batch(pairs_to_encode)
+            logits = engine._forward(batch_enc)
+            chunk_logits.append(logits.astype(np.float32))
+            chunk_targets.append(np.array(targets_chunk, dtype=np.int64))
+            total_samples += len(chunk)
 
     elif primitive == "score":
         if not args.criterion:
             print("Error: --criterion is required for score calibration.", file=sys.stderr)
             return 1
 
-        for idx, row in enumerate(rows):
-            if target_col not in row:
-                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
-                return 1
-            try:
-                target_num = float(row[target_col])
-                target_val = 1 if target_num >= 0.5 else 0
-            except ValueError:
-                target_raw = str(row[target_col]).strip().lower()
-                target_val = 1 if target_raw in ("1", "true", "yes", "high") else 0
+        for chunk in _chunked_generator(row_gen, chunk_size=32):
+            pairs_to_encode = []
+            targets_chunk = []
 
-            state = _extract_state(row, state_col)
-            premise, hyp = build_nli_pair(state, args.criterion)
-            enc = engine.tokenizer.encode(premise, pair=hyp)
-            logits = engine._forward(enc)
-            logit = float(logits[0, engine.entailment_idx])
-            all_logits.append(logit)
-            all_targets.append(target_val)
+            for row in chunk:
+                if target_col not in row:
+                    print(f"Error: Target column '{target_col}' not found in row.", file=sys.stderr)
+                    return 1
+                try:
+                    target_num = float(row[target_col])
+                    target_val = 1 if target_num >= 0.5 else 0
+                except ValueError:
+                    target_raw = str(row[target_col]).strip().lower()
+                    target_val = 1 if target_raw in ("1", "true", "yes", "high") else 0
 
-    Z = np.array(all_logits)
-    Y = np.array(all_targets)
+                state = _extract_state(row, state_col)
+                premise, hyp = build_nli_pair(state, args.criterion)
+                pairs_to_encode.append((premise, hyp))
+                targets_chunk.append(target_val)
+
+            batch_enc = engine.tokenizer.encode_batch(pairs_to_encode)
+            logits = engine._forward(batch_enc)
+            chunk_logits.append(logits.astype(np.float32))
+            chunk_targets.append(np.array(targets_chunk, dtype=np.int64))
+            total_samples += len(chunk)
+
+    if total_samples == 0:
+        print("Error: Dataset is empty.", file=sys.stderr)
+        return 1
+
+    Z = np.concatenate(chunk_logits, axis=0)
+    Y = np.concatenate(chunk_targets, axis=0)
 
     # Initial uncalibrated metrics (T=1.0)
     init_nll = compute_nll(Z, Y, temperature=1.0)
@@ -349,14 +387,16 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
         init_preds = np.argmax(init_probs, axis=1)
         init_confs = np.max(init_probs, axis=1)
     else:
-        init_p = 1.0 / (1.0 + np.exp(-Z))
+        init_exp = np.exp(Z - np.max(Z, axis=1, keepdims=True))
+        init_p_all = init_exp / np.sum(init_exp, axis=1, keepdims=True)
+        init_p = init_p_all[:, engine.entailment_idx]
         init_preds = (init_p > 0.5).astype(int)
         init_confs = np.where(init_preds == 1, init_p, 1.0 - init_p)
 
-    ece_before = compute_ece(init_confs, init_preds, Y)
+    ece_before = compute_ece(init_confs, init_preds, Y, strategy="quantile")
 
-    # Optimize Temperature
-    T_opt = fit_temperature(Z, Y, bounds=(0.1, 10.0))
+    # Optimize Temperature (with inverse beta convexity)
+    T_opt = fit_temperature(Z, Y, bounds=(0.1, 10.0), enforce_gating=False if total_samples < 30 else True)
 
     # Calibrated metrics (T=T_opt)
     cal_nll = compute_nll(Z, Y, temperature=T_opt)
@@ -368,11 +408,13 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
         cal_confs = np.max(cal_probs, axis=1)
     else:
         scaled_Z = Z / T_opt
-        cal_p = 1.0 / (1.0 + np.exp(-scaled_Z))
+        cal_exp = np.exp(scaled_Z - np.max(scaled_Z, axis=1, keepdims=True))
+        cal_p_all = cal_exp / np.sum(cal_exp, axis=1, keepdims=True)
+        cal_p = cal_p_all[:, engine.entailment_idx]
         cal_preds = (cal_p > 0.5).astype(int)
         cal_confs = np.where(cal_preds == 1, cal_p, 1.0 - cal_p)
 
-    ece_after = compute_ece(cal_confs, cal_preds, Y)
+    ece_after = compute_ece(cal_confs, cal_preds, Y, strategy="quantile")
 
     # Output file destination
     cal_file = Path(args.output) if args.output else (engine.models_dir / "calibration.json")
@@ -388,10 +430,10 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
     print("==================================================")
     print(f"Calibration Complete for [{primitive}]")
     print("==================================================")
-    print(f"Dataset:            {data_path} ({len(rows)} samples)")
+    print(f"Dataset:            {data_path} ({total_samples} samples)")
     print(f"Optimal Temp (T*):  {T_opt:.4f}")
     print(f"NLL Loss:           {init_nll:.4f} -> {cal_nll:.4f}")
-    print(f"ECE:                {ece_before * 100:.2f}% -> {ece_after * 100:.2f}% (Delta: {(ece_before - ece_after) * 100:+.2f}%)")
+    print(f"ECE (Quantile):     {ece_before * 100:.2f}% -> {ece_after * 100:.2f}% (Delta: {(ece_before - ece_after) * 100:+.2f}%)")
     print(f"Saved:              {cal_file}")
     return 0
 

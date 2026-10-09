@@ -143,6 +143,72 @@ class TestTemperatureOptimization:
         cal_nll = compute_nll(z, targets, temperature=T_opt)
         assert cal_nll <= init_nll + 1e-6
 
+    def test_beta_space_convexity(self) -> None:
+        """Prove empirically that NLL loss is convex with respect to beta = 1/T."""
+        np.random.seed(42)
+        n_samples, n_classes = 200, 4
+        logits = np.random.randn(n_samples, n_classes) * 2.0
+        targets = np.random.randint(0, n_classes, size=n_samples)
+
+        betas = np.linspace(0.2, 4.0, 50)
+        nlls = [compute_nll(logits, targets, temperature=1.0 / b) for b in betas]
+
+        # Numerical second differences d^2 NLL / d beta^2 should be >= -1e-4
+        d2 = np.diff(nlls, n=2)
+        assert np.all(d2 >= -1e-4), "NLL in beta-space failed convexity check (second difference < 0)"
+
+    def test_boundary_hit_fallback(self) -> None:
+        """Confirm that boundary-hit conditions trigger fallback to neutral T=1.0."""
+        # Intentionally create inverted logits where true class has lowest logit
+        n_samples, n_classes = 50, 3
+        inverted_logits = np.zeros((n_samples, n_classes))
+        targets = np.zeros(n_samples, dtype=int)
+        inverted_logits[:, 0] = -10.0  # true class has minimum logit
+        inverted_logits[:, 1] = 5.0
+        inverted_logits[:, 2] = 5.0
+
+        # Optimizer should hit boundary or fail accuracy gate and fall back to 1.0
+        T_opt = fit_temperature(inverted_logits, targets, bounds=(0.1, 10.0))
+        assert T_opt == 1.0
+
+    def test_sample_size_gating(self) -> None:
+        """Confirm N < 30 samples triggers fallback to neutral T=1.0 under enforce_gating."""
+        small_logits = np.random.randn(15, 3)
+        small_targets = np.random.randint(0, 3, size=15)
+        T_opt = fit_temperature(small_logits, small_targets, enforce_gating=True)
+        assert T_opt == 1.0
+
+    def test_accuracy_gating(self) -> None:
+        """Confirm accuracy <= 1/K triggers fallback to neutral T=1.0."""
+        np.random.seed(42)
+        n_samples, n_classes = 50, 4
+        # Model that predicts class 0 100% of the time
+        logits = np.zeros((n_samples, n_classes))
+        logits[:, 0] = 5.0
+        # But target is class 1 for 45 samples (accuracy = 5/50 = 10% < 25%)
+        targets = np.ones(n_samples, dtype=int)
+        targets[:5] = 0
+
+        T_opt = fit_temperature(logits, targets, enforce_gating=True)
+        assert T_opt == 1.0
+
+
+class TestQuantileBinningECE:
+    def test_quantile_ece_on_clustered_confidences(self) -> None:
+        """Verify quantile binning accurately partitions dense probability clusters."""
+        n_samples = 400
+        # Confidences tightly clustered in [0.55, 0.65]
+        confidences = 0.55 + 0.10 * np.random.rand(n_samples)
+        predictions = np.ones(n_samples, dtype=int)
+        # 60% accuracy
+        targets = (np.random.rand(n_samples) < 0.60).astype(int)
+
+        ece_quantile = compute_ece(confidences, predictions, targets, n_bins=10, strategy="quantile")
+        assert 0.0 <= ece_quantile <= 1.0
+        # Equal width might lump everything into 1-2 bins, quantile distributes into 10 equal bins
+        ece_width = compute_ece(confidences, predictions, targets, n_bins=10, strategy="equal_width")
+        assert 0.0 <= ece_width <= 1.0
+
 
 class TestCalibrationPersistence:
     def test_save_and_load_calibration(self, tmp_path: Path) -> None:

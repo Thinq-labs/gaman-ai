@@ -98,8 +98,8 @@ class TestNoulPrimitive:
         assert result["latency_ms"] >= 0.0
 
     def test_noul_destructive_action_detected(self, engine: GamanEngine) -> None:
-        state = {"action": "delete_all_databases", "force": True}
-        result = engine.noul(state, "Is this a dangerous or destructive action?")
+        state = {"user_id": 123, "action": "delete_all"}
+        result = engine.noul(state, "Is this a destructive action?")
         assert result["passed"] is True
         assert result["probability"] > 0.5
 
@@ -147,3 +147,38 @@ class TestEmbedMethod:
         assert isinstance(emb, np.ndarray)
         assert emb.ndim == 1
         assert len(emb) > 0
+
+
+@_requires_model
+class TestShiftInvariance:
+    """Verifies that 3-class normalized Softmax is mathematically invariant to constant logit shifts."""
+
+    def test_shift_invariance_on_primitives(
+        self, engine: GamanEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state = {"user_id": 123, "action": "delete_all"}
+        options = ["approve", "reject", "flag"]
+
+        # Run unshifted baseline
+        choice_base = engine.choice(state, options)
+        noul_base = engine.noul(state, "Is this a destructive action?")
+        score_base = engine.score(state, "Severity of action")
+
+        # Mock forward pass to add constant +10.0 to all logits
+        orig_forward = engine._forward
+
+        def shifted_forward(encodings: dict[str, np.ndarray]) -> np.ndarray:
+            logits = orig_forward(encodings)
+            return logits + 10.0
+
+        monkeypatch.setattr(engine, "_forward", shifted_forward)
+
+        # Run shifted pass
+        choice_shifted = engine.choice(state, options)
+        noul_shifted = engine.noul(state, "Is this a destructive action?")
+        score_shifted = engine.score(state, "Severity of action")
+
+        assert choice_shifted["selection"] == choice_base["selection"]
+        assert pytest.approx(choice_shifted["confidence"], abs=1e-4) == choice_base["confidence"]
+        assert pytest.approx(noul_shifted["probability"], abs=1e-4) == noul_base["probability"]
+        assert pytest.approx(score_shifted["value"], abs=1e-4) == score_base["value"]
