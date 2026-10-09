@@ -20,6 +20,7 @@ models/*
 !models/.gitkeep
 !models/tokenizer.json
 !models/config.json
+!models/calibration.json
 
 # ------------------------------------------------------------------------------
 # 2. Datasets & Evaluation Logs
@@ -133,6 +134,5 @@ Thumbs.db
 # ------------------------------------------------------------------------------
 # 6. Documentation & Agent Instructions
 # ------------------------------------------------------------------------------
-docs/
 agents.md
 AGENTS.md

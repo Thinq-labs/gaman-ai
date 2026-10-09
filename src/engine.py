@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import onnxruntime as ort
 
+from src.calibration import load_calibration
 from src.serializer import build_nli_pair, serialize_state
 from src.tokenizer import GamanTokenizer
 
@@ -79,6 +80,24 @@ class GamanEngine:
 
         # 4. Explicit Warm-up to eliminate first-query scratchpad latency penalty
         self._warmup()
+
+        # 5. Probability Calibration Parameters (T=1.0 default if uncalibrated)
+        self.temp_choice: float = 1.0
+        self.temp_noul: float = 1.0
+        self.temp_score: float = 1.0
+        self.load_calibration()
+
+    def load_calibration(self, calibration_path: str | Path | None = None) -> None:
+        """
+        Load temperature scaling calibration parameters from calibration.json.
+        If the file does not exist, defaults to neutral temperatures (T=1.0).
+        """
+        path = Path(calibration_path) if calibration_path else (self.models_dir / "calibration.json")
+        cal_data = load_calibration(path)
+        temps = cal_data.get("temperatures", {})
+        self.temp_choice = float(temps.get("choice", 1.0))
+        self.temp_noul = float(temps.get("noul", 1.0))
+        self.temp_score = float(temps.get("score", 1.0))
 
     def _load_config(self) -> dict[str, Any]:
         """Load model configuration dynamically."""
@@ -160,8 +179,9 @@ class GamanEngine:
         logits = self._forward(batch_enc)  # [K, num_labels]
         entailment_logits = logits[:, self.entailment_idx]
 
-        # Softmax over options
-        exp_logits = np.exp(entailment_logits - np.max(entailment_logits))
+        # Temperature-scaled Softmax over options
+        scaled_logits = entailment_logits / self.temp_choice
+        exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
         probs = exp_logits / np.sum(exp_logits)
 
         best_idx = int(np.argmax(probs))
@@ -209,8 +229,9 @@ class GamanEngine:
         logits = self._forward(enc)  # [1, num_labels]
         logit = float(logits[0, self.entailment_idx])
 
-        # Strict Sigmoid probability
-        prob = 1.0 / (1.0 + float(np.exp(-logit)))
+        # Temperature-scaled Sigmoid probability
+        scaled_logit = logit / self.temp_noul
+        prob = 1.0 / (1.0 + float(np.exp(-scaled_logit)))
         passed = bool(prob > 0.5)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -240,8 +261,9 @@ class GamanEngine:
         logits = self._forward(enc)  # [1, num_labels]
         logit = float(logits[0, self.entailment_idx])
 
-        # Bounded scalar [0.0, 1.0] via Sigmoid
-        val = 1.0 / (1.0 + float(np.exp(-logit)))
+        # Temperature-scaled bounded scalar [0.0, 1.0] via Sigmoid
+        scaled_logit = logit / self.temp_score
+        val = 1.0 / (1.0 + float(np.exp(-scaled_logit)))
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         return {

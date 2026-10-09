@@ -20,7 +20,17 @@ import sys
 from pathlib import Path
 from typing import Any, Generator, Sequence
 
+import numpy as np
+
+from src.calibration import (
+    compute_ece,
+    compute_nll,
+    fit_temperature,
+    load_calibration,
+    save_calibration,
+)
 from src.engine import GamanEngine
+from src.serializer import build_nli_pair, serialize_state
 
 
 def parse_state_input(state_input: str) -> dict[str, Any]:
@@ -222,6 +232,170 @@ def handle_batch(args: argparse.Namespace, engine: GamanEngine) -> int:
     return 0
 
 
+# ─── Calibration Handler ─────────────────────────────────────────────────────
+
+def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
+    data_path = Path(args.data)
+    if not data_path.exists():
+        print(f"Error: Dataset not found at '{data_path}'", file=sys.stderr)
+        return 1
+
+    suffix = data_path.suffix.lower()
+    if suffix == ".csv":
+        rows = list(_stream_csv_rows(data_path))
+    elif suffix in (".jsonl", ".json"):
+        rows = list(_stream_jsonl_rows(data_path))
+    else:
+        print(f"Error: Unsupported format '{suffix}'. Use .csv or .jsonl", file=sys.stderr)
+        return 1
+
+    if not rows:
+        print("Error: Dataset is empty.", file=sys.stderr)
+        return 1
+
+    primitive = args.primitive
+    target_col = args.target_column
+    state_col = args.state_column
+
+    all_logits: list[Any] = []
+    all_targets: list[int] = []
+
+    if primitive == "choice":
+        if not args.options:
+            print("Error: --options is required for choice calibration.", file=sys.stderr)
+            return 1
+        options = _parse_options_list(args.options)
+        clean_options = [opt.replace("_", " ") for opt in options]
+
+        for idx, row in enumerate(rows):
+            if target_col not in row:
+                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
+                return 1
+            target_raw = str(row[target_col]).strip()
+            if target_raw in options:
+                target_idx = options.index(target_raw)
+            else:
+                try:
+                    target_idx = int(target_raw)
+                except ValueError:
+                    print(
+                        f"Error: Target value '{target_raw}' does not match any options: {options}",
+                        file=sys.stderr,
+                    )
+                    return 1
+
+            state = _extract_state(row, state_col)
+            premise = serialize_state(state)
+            pairs = [(premise, f"The decision is to {opt}.") for opt in clean_options]
+            batch_enc = engine.tokenizer.encode_batch(pairs)
+            logits = engine._forward(batch_enc)
+            entailment_logits = logits[:, engine.entailment_idx]
+            all_logits.append(entailment_logits)
+            all_targets.append(target_idx)
+
+    elif primitive == "noul":
+        if not args.predicate:
+            print("Error: --predicate is required for noul calibration.", file=sys.stderr)
+            return 1
+        hypothesis = engine._normalize_predicate(args.predicate)
+
+        for idx, row in enumerate(rows):
+            if target_col not in row:
+                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
+                return 1
+            target_raw = str(row[target_col]).strip().lower()
+            target_val = 1 if target_raw in ("1", "true", "yes", "pass", "passed") else 0
+
+            state = _extract_state(row, state_col)
+            premise, hyp = build_nli_pair(state, hypothesis)
+            enc = engine.tokenizer.encode(premise, pair=hyp)
+            logits = engine._forward(enc)
+            logit = float(logits[0, engine.entailment_idx])
+            all_logits.append(logit)
+            all_targets.append(target_val)
+
+    elif primitive == "score":
+        if not args.criterion:
+            print("Error: --criterion is required for score calibration.", file=sys.stderr)
+            return 1
+
+        for idx, row in enumerate(rows):
+            if target_col not in row:
+                print(f"Error: Target column '{target_col}' not found in row {idx}.", file=sys.stderr)
+                return 1
+            try:
+                target_num = float(row[target_col])
+                target_val = 1 if target_num >= 0.5 else 0
+            except ValueError:
+                target_raw = str(row[target_col]).strip().lower()
+                target_val = 1 if target_raw in ("1", "true", "yes", "high") else 0
+
+            state = _extract_state(row, state_col)
+            premise, hyp = build_nli_pair(state, args.criterion)
+            enc = engine.tokenizer.encode(premise, pair=hyp)
+            logits = engine._forward(enc)
+            logit = float(logits[0, engine.entailment_idx])
+            all_logits.append(logit)
+            all_targets.append(target_val)
+
+    Z = np.array(all_logits)
+    Y = np.array(all_targets)
+
+    # Initial uncalibrated metrics (T=1.0)
+    init_nll = compute_nll(Z, Y, temperature=1.0)
+    if primitive == "choice":
+        init_exp = np.exp(Z - np.max(Z, axis=1, keepdims=True))
+        init_probs = init_exp / np.sum(init_exp, axis=1, keepdims=True)
+        init_preds = np.argmax(init_probs, axis=1)
+        init_confs = np.max(init_probs, axis=1)
+    else:
+        init_p = 1.0 / (1.0 + np.exp(-Z))
+        init_preds = (init_p > 0.5).astype(int)
+        init_confs = np.where(init_preds == 1, init_p, 1.0 - init_p)
+
+    ece_before = compute_ece(init_confs, init_preds, Y)
+
+    # Optimize Temperature
+    T_opt = fit_temperature(Z, Y, bounds=(0.1, 10.0))
+
+    # Calibrated metrics (T=T_opt)
+    cal_nll = compute_nll(Z, Y, temperature=T_opt)
+    if primitive == "choice":
+        scaled_Z = Z / T_opt
+        cal_exp = np.exp(scaled_Z - np.max(scaled_Z, axis=1, keepdims=True))
+        cal_probs = cal_exp / np.sum(cal_exp, axis=1, keepdims=True)
+        cal_preds = np.argmax(cal_probs, axis=1)
+        cal_confs = np.max(cal_probs, axis=1)
+    else:
+        scaled_Z = Z / T_opt
+        cal_p = 1.0 / (1.0 + np.exp(-scaled_Z))
+        cal_preds = (cal_p > 0.5).astype(int)
+        cal_confs = np.where(cal_preds == 1, cal_p, 1.0 - cal_p)
+
+    ece_after = compute_ece(cal_confs, cal_preds, Y)
+
+    # Output file destination
+    cal_file = Path(args.output) if args.output else (engine.models_dir / "calibration.json")
+    cal_config = load_calibration(cal_file)
+    cal_config["temperatures"][primitive] = T_opt
+    cal_config["ece_before"] = round(ece_before, 4)
+    cal_config["ece_after"] = round(ece_after, 4)
+    save_calibration(cal_config, cal_file)
+
+    # Reload into active engine
+    engine.load_calibration(cal_file)
+
+    print("==================================================")
+    print(f"Calibration Complete for [{primitive}]")
+    print("==================================================")
+    print(f"Dataset:            {data_path} ({len(rows)} samples)")
+    print(f"Optimal Temp (T*):  {T_opt:.4f}")
+    print(f"NLL Loss:           {init_nll:.4f} -> {cal_nll:.4f}")
+    print(f"ECE:                {ece_before * 100:.2f}% -> {ece_after * 100:.2f}% (Delta: {(ece_before - ece_after) * 100:+.2f}%)")
+    print(f"Saved:              {cal_file}")
+    return 0
+
+
 # ─── Argument Parser Construction ────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -279,6 +453,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--criterion", type=str, default=None, help="Criterion for score primitive")
     p_batch.add_argument("--batch-size", type=int, default=16, help="Evaluation batch size (default: 16)")
 
+    # 5. calibrate
+    p_calibrate = subparsers.add_parser("calibrate", help="Optimize temperature scaling on validation dataset")
+    p_calibrate.add_argument("--data", type=str, required=True, help="Path to validation CSV or JSONL dataset")
+    p_calibrate.add_argument(
+        "--primitive",
+        type=str,
+        choices=["choice", "noul", "score"],
+        required=True,
+        help="Primitive to calibrate",
+    )
+    p_calibrate.add_argument("--target-column", type=str, required=True, help="Column containing ground truth labels")
+    p_calibrate.add_argument("--state-column", type=str, default=None, help="Column containing input state (default: all columns)")
+    p_calibrate.add_argument("--options", type=str, nargs="+", default=None, help="Options for choice primitive")
+    p_calibrate.add_argument("--predicate", type=str, default=None, help="Predicate for noul primitive")
+    p_calibrate.add_argument("--criterion", type=str, default=None, help="Criterion for score primitive")
+    p_calibrate.add_argument("--output", type=str, default=None, help="Path to write calibration.json (default: models/calibration.json)")
+
     return parser
 
 
@@ -308,6 +499,8 @@ def main(
         return handle_score(args, engine)
     elif args.subcommand == "batch":
         return handle_batch(args, engine)
+    elif args.subcommand == "calibrate":
+        return handle_calibrate(args, engine)
 
     return 0
 

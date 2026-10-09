@@ -311,3 +311,97 @@ class TestBatchCLI:
         data = json.loads(captured.out)
         assert data["primitive"] == "choice"
         assert data["selection"] in ["healthy", "unhealthy"]
+
+
+@_requires_model
+class TestCalibrateCLI:
+    """Tests for the calibrate CLI subcommand."""
+
+    def test_calibrate_choice_csv(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        shared_engine: GamanEngine,
+    ) -> None:
+        csv_file = tmp_path / "val_choice.csv"
+        out_cal = tmp_path / "calibration.json"
+
+        # Create validation dataset
+        with open(csv_file, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["state", "target"])
+            writer.writeheader()
+            writer.writerow({"state": '{"cpu": 99, "mem": 90}', "target": "scale_up"})
+            writer.writerow({"state": '{"cpu": 10, "mem": 15}', "target": "scale_down"})
+            writer.writerow({"state": '{"cpu": 50, "mem": 50}', "target": "do_nothing"})
+
+        exit_code = main(
+            [
+                "calibrate",
+                "--data", str(csv_file),
+                "--primitive", "choice",
+                "--state-column", "state",
+                "--target-column", "target",
+                "--options", "scale_up", "scale_down", "do_nothing",
+                "--output", str(out_cal),
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Calibration Complete for [choice]" in captured.out
+        assert "Optimal Temp (T*):" in captured.out
+        assert out_cal.exists()
+
+        with open(out_cal, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert "temperatures" in data
+        assert 0.1 <= data["temperatures"]["choice"] <= 10.0
+
+    def test_calibrate_noul_csv(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        shared_engine: GamanEngine,
+    ) -> None:
+        csv_file = tmp_path / "val_noul.csv"
+        out_cal = tmp_path / "calibration.json"
+
+        with open(csv_file, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["cmd", "label"])
+            writer.writeheader()
+            writer.writerow({"cmd": "DROP TABLE users;", "label": "1"})
+            writer.writerow({"cmd": "SELECT * FROM users;", "label": "0"})
+
+        exit_code = main(
+            [
+                "calibrate",
+                "--data", str(csv_file),
+                "--primitive", "noul",
+                "--state-column", "cmd",
+                "--target-column", "label",
+                "--predicate", "Is this action destructive?",
+                "--output", str(out_cal),
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "Calibration Complete for [noul]" in captured.out
+        assert out_cal.exists()
+
+    def test_calibrate_missing_file_returns_error(
+        self, capsys: pytest.CaptureFixture[str], shared_engine: GamanEngine
+    ) -> None:
+        exit_code = main(
+            [
+                "calibrate",
+                "--data", "nonexistent_val.csv",
+                "--primitive", "choice",
+                "--target-column", "target",
+                "--options", "opt1", "opt2",
+            ],
+            engine=shared_engine,
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "Dataset not found" in captured.err
