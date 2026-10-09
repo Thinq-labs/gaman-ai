@@ -1,0 +1,55 @@
+name: CI Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }} - Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Cache Hugging Face & ONNX model assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            models/
+          key: gaman-models-small-${{ runner.os }}-${{ hashFiles('scripts/export_backbone.py') }}
+          restore-keys: |
+            gaman-models-small-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -e .
+
+      - name: Model pre-flight (Export small tier if missing)
+        run: |
+          python -c "from pathlib import Path; import sys; p = Path('models/backbone.onnx'); sys.exit(0 if p.exists() else 1)" || python scripts/export_backbone.py
+
+      - name: Run linter check (Ruff)
+        run: |
+          ruff check src/
+
+      - name: Execute test suite (Pytest)
+        run: |
+          pytest -v --tb=short

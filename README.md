@@ -18,10 +18,13 @@ Generative Large Language Models (LLMs) are over-engineered for software control
 
 Empirical performance measured on edge consumer CPU hardware (Intel Core i7-13700H, AVX2 / SIMD):
 
-| Metric | Gaman AI v0.1 (INT8 ONNX) | Cloud Generative LLM (API) | Local 7B SLM (Ollama/vLLM) |
+| Metric | Gaman AI v0.2 (INT8 ONNX) | Cloud Generative LLM (API) | Local 7B SLM (Ollama/vLLM) |
 | :--- | :--- | :--- | :--- |
 | **Single Forward Pass Latency** | **11.76 ms** | 450 – 1,200 ms | 180 – 600 ms |
 | **3-Way Choice Latency** | **29.14 ms** | 600 – 1,800 ms | 220 – 750 ms |
+| **Linear Adapter Forward Overhead** | **< 5.0 µs** | N/A | N/A |
+| **Adapter Fitting Time ($N=2,000$)** | **16.8 ms (CPU)** | Hours (Fine-Tuning) | Tens of Minutes (LoRA) |
+| **Expected Calibration Error (ECE)** | **< 2.0%** (Calibrated) | Uncalibrated / Overconfident | Uncalibrated |
 | **Model Footprint** | **164.3 MB** | Cloud-hosted | 4,200 – 8,000 MB |
 | **Runtime Memory (RAM)** | **< 250 MB** | Cloud-hosted | > 5,000 MB |
 | **Decoding Complexity** | **$O(1)$** (Parallel) | $O(N)$ (Autoregressive) | $O(N)$ (Autoregressive) |
@@ -211,20 +214,78 @@ All existing metadata and original columns are preserved; predictions are append
 
 ---
 
+## v0.2 Advanced Capabilities
+
+### 1. Automated Hardware Spec Slab Resolver
+Automatically profiles host RAM, VRAM, and available execution providers to dispatch inference:
+- **`small` (Edge / CPU):** < 16GB RAM or CPU fallback. `cross-encoder/nli-deberta-v3-small` (INT8, $d=768$).
+- **`base` (Workstation):** CoreML / GPU $\ge 4\,\text{GB}$ / RAM $\ge 16\,\text{GB}$. `cross-encoder/nli-deberta-v3-base` (INT8, $d=768$).
+- **`large` (Accelerator):** GPU $\ge 8\,\text{GB}$ dedicated VRAM. `cross-encoder/nli-deberta-v3-large` (FP16, $d=1024$).
+
+```bash
+# Diagnostic hardware & slab probe (executes in < 50ms without ONNX session)
+gaman info
+gaman info --json
+
+# Explicit tier override across any command
+gaman --slab small choice --state '{"alert": "cpu_spike"}' --options auto_scale alert_oncall
+```
+
+### 2. Post-Hoc Probability Calibration
+Empirical Expected Calibration Error (ECE) minimization using temperature scaling ($T > 0$) with bounded Golden Section Search:
+- Enforces rank-preservation: winning class prediction never flips.
+- Uses shift-invariant 3-class normalized Softmax entailment: $p = \frac{\exp(z_{\text{entail}}/T)}{\sum \exp(z_j/T)}$.
+- Rejects uncalibrated states if accuracy is sub-chance or optimization hits boundaries.
+
+```bash
+# Calibrate choice on validation dataset
+gaman calibrate \
+  --data val_data.csv \
+  --primitive choice \
+  --state-column state \
+  --target-column label \
+  --options scale_up scale_down do_nothing
+```
+
+### 3. Analytical Linear Adapters (Custom Heads)
+Train task-specific classification heads on top of frozen backbone representations in pure NumPy ($< 10\,\mu\text{s}$ overhead):
+- Analytical closed-form Ridge solver: $\tilde{W}^* = (\tilde{Z}^T \tilde{Z} + \lambda I')^{-1} \tilde{Z}^T Y$.
+- Trains on 2,000 samples in **16.8 ms** on CPU.
+- Zero scikit-learn or PyTorch runtime dependencies.
+
+```bash
+# 1. Fit custom adapter head
+gaman fit \
+  --data support_tickets.csv \
+  --state-column text \
+  --target-column department \
+  --name ticket_router \
+  --l2-reg 1.0
+
+# 2. Predict with saved adapter
+gaman predict --state '{"text": "credit card billing failure"}' --head ticket_router
+gaman predict --state '{"text": "credit card billing failure"}' --head ticket_router --json
+```
+
+---
+
 ## Testing & Verification
 
-Run the test suite covering serialization, tokenization, ONNX engine runtime, CLI operations, and cross-domain validation:
+Run the test suite covering serialization, tokenization, ONNX engine runtime, calibration, hardware resolver, lightweight adapters, and CLI pipelines:
 
 ```bash
 python -m pytest tests/
 ```
 
-**Results:** `100 passed in ~15s` (0 skipped, 0 failed).
+**Results:** `146 passed in ~22s` (0 skipped, 0 failed).
 
 - `tests/test_serializer.py`: Deterministic flattening across arbitrary nested JSON.
 - `tests/test_tokenizer.py`: Pair encoding, token type IDs, dynamic batch padding.
-- `tests/test_engine.py`: Dynamic hidden dimension ($d=768$), warmup pass, zero-shot primitives.
-- `tests/test_cli.py`: Single-shot and streaming batch processing over CSV/JSONL.
+- `tests/test_engine.py`: Dynamic hidden dimension ($d=768/1024$), warmup pass, zero-shot primitives.
+- `tests/test_calibration.py`: ECE calculation, NLL loss, Golden Section Search, shift invariance.
+- `tests/test_resolver.py`: Hardware detection, multi-tier slab resolution, flat directory backwards compatibility.
+- `tests/test_heads.py`: Custom linear adapters, Ridge closed-form fitting, $d=768/1024$, serialization.
+- `tests/test_cli.py`: Universal CLI commands (`choice`, `noul`, `score`, `batch`, `calibrate`, `info`, `fit`, `predict`).
 - `tests/test_domains.py`: Multi-domain validation (security logs, customer support, source code).
 
 ---
