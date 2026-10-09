@@ -11,16 +11,13 @@ Tests for:
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
 
 from src.resolver import ModelNotFoundError
-
 
 # ─── 1. Missing Model Tier Exception Guidance ────────────────────────────────
 
@@ -165,7 +162,6 @@ class TestFitAdapter:
 
         np.random.seed(1337)
         d = 1024
-        classes = ["spam", "ham"]
         X_spam = np.random.randn(30, d).astype(np.float32) + 1.0
         X_ham = np.random.randn(30, d).astype(np.float32) - 1.0
         X = np.vstack([X_spam, X_ham])

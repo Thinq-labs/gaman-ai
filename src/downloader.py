@@ -12,13 +12,12 @@ Provides:
 
 from __future__ import annotations
 
+import contextlib
 import os
-import shutil
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 from src.resolver import get_default_cache_dir
 
@@ -108,10 +107,8 @@ def download_file(
 
     except Exception as exc:
         if tmp_path.exists():
-            try:
+            with contextlib.suppress(OSError):
                 tmp_path.unlink()
-            except OSError:
-                pass
         raise DownloadError(f"Failed to download from '{url}': {exc}") from exc
 
 
@@ -166,10 +163,8 @@ def ensure_model_tier(
             continue
 
         url = get_file_url(tier, filename)
-        try:
-            download_file(url, target_file, silent=True)
-        except Exception:
+        with contextlib.suppress(Exception):
             # Silently skip optional tokenizer/config files
-            pass
+            download_file(url, target_file, silent=True)
 
     return tier_dir

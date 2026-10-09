@@ -10,6 +10,9 @@ jobs:
   test:
     name: Test (${{ matrix.os }} - Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +47,7 @@ jobs:
 
       - name: Model pre-flight (Export small tier if missing)
         run: |
-          python -c "from pathlib import Path; import sys; p = Path('models/backbone.onnx'); sys.exit(0 if p.exists() else 1)" || python scripts/export_backbone.py
+          python scripts/ci_prepare_model.py
 
       - name: Run linter check (Ruff)
         run: |

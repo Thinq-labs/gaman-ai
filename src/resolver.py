@@ -102,7 +102,7 @@ def _detect_system_ram() -> int:
             pass
     elif sys.platform.startswith("linux"):
         try:
-            with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            with open("/proc/meminfo", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("MemTotal:"):
                         parts = line.split()

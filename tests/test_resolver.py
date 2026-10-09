@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from src.resolver import (
     HardwareProfile,
-    SlabConfig,
     detect_hardware,
     resolve_model_path,
     resolve_slab,

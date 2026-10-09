@@ -13,18 +13,14 @@ Tests for:
 from __future__ import annotations
 
 import io
-import os
-import shutil
 import urllib.error
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from src.downloader import DownloadError, ensure_model_tier
 from src.resolver import get_default_cache_dir, resolve_model_path
-
 
 # ─── 1. Cache Directory Discovery ────────────────────────────────────────────
 
@@ -124,7 +120,7 @@ def test_downloader_atomic_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     def mock_urlopen(req: Any, timeout: int = 30):
         url = req.full_url if hasattr(req, "full_url") else str(req)
-        return FakeHTTPResponse(f"mock-content-for-{url}".encode("utf-8"))
+        return FakeHTTPResponse(f"mock-content-for-{url}".encode())
 
     monkeypatch.setattr("urllib.request.urlopen", mock_urlopen)
 

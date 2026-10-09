@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # ─── Primitive value serializer ──────────────────────────────────────────────
 
 def _serialize_value(value: Any) -> str:

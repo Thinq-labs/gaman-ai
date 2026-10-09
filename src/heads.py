@@ -95,7 +95,7 @@ class CustomLinearHead:
             "selection": selection,
             "confidence": float(round(confidence, 4)),
             "probabilities": {
-                cls: float(round(float(p), 4)) for cls, p in zip(self.classes, probs)
+                cls: float(round(float(p), 4)) for cls, p in zip(self.classes, probs, strict=False)
             },
         }
 
@@ -119,7 +119,7 @@ class CustomLinearHead:
         p = Path(filepath)
         if not p.exists():
             raise FileNotFoundError(f"Adapter head file not found at: {p}")
-        with open(p, "r", encoding="utf-8") as f:
+        with open(p, encoding="utf-8") as f:
             data = json.load(f)
         return cls(
             name=data["name"],
@@ -163,10 +163,7 @@ def fit_adapter(
     if len(labels) != N:
         raise ValueError(f"Number of labels ({len(labels)}) must match samples N={N}")
 
-    if classes is None:
-        target_classes = sorted(list(set(labels)))
-    else:
-        target_classes = list(classes)
+    target_classes = sorted(list(set(labels))) if classes is None else list(classes)
 
     k = len(target_classes)
     if k < 2:

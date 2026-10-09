@@ -10,6 +10,7 @@ redundant 164MB ONNX reloads across tests.
 import csv
 import json
 from pathlib import Path
+
 import pytest
 
 from src.cli import main
@@ -195,7 +196,7 @@ class TestBatchCLI:
         assert exit_code == 0
         assert output_csv.exists()
 
-        with open(output_csv, "r", encoding="utf-8") as f:
+        with open(output_csv, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             out_rows = list(reader)
 
@@ -238,7 +239,7 @@ class TestBatchCLI:
         assert exit_code == 0
         assert output_csv.exists()
 
-        with open(output_csv, "r", encoding="utf-8") as f:
+        with open(output_csv, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             out_rows = list(reader)
 
@@ -275,7 +276,7 @@ class TestBatchCLI:
         assert exit_code == 0
         assert output_jsonl.exists()
 
-        with open(output_jsonl, "r", encoding="utf-8") as f:
+        with open(output_jsonl, encoding="utf-8") as f:
             out_lines = [json.loads(line) for line in f if line.strip()]
 
         assert len(out_lines) == 2
@@ -352,7 +353,7 @@ class TestCalibrateCLI:
         assert "Optimal Temp (T*):" in captured.out
         assert out_cal.exists()
 
-        with open(out_cal, "r", encoding="utf-8") as f:
+        with open(out_cal, encoding="utf-8") as f:
             data = json.load(f)
         assert "temperatures" in data
         assert 0.1 <= data["temperatures"]["choice"] <= 10.0

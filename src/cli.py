@@ -14,12 +14,14 @@ Universal CLI Invariants:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import sys
 import time
+from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import Any, Generator, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -135,7 +137,7 @@ def handle_fit(args: argparse.Namespace, engine: GamanEngine) -> int:
     states: list[dict[str, Any]] = []
     labels: list[str] = []
 
-    with open(data_path, "r", encoding="utf-8", newline="") as f:
+    with open(data_path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if args.target_column not in row:
@@ -198,15 +200,14 @@ def handle_fit(args: argparse.Namespace, engine: GamanEngine) -> int:
 
 def _stream_csv_rows(file_path: Path) -> Generator[dict[str, Any], None, None]:
     """Stream CSV rows one by one to avoid loading entire file into memory."""
-    with open(file_path, mode="r", encoding="utf-8", newline="") as f:
+    with open(file_path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            yield row
+        yield from reader
 
 
 def _stream_jsonl_rows(file_path: Path) -> Generator[dict[str, Any], None, None]:
     """Stream JSONL rows one by one to avoid loading entire file into memory."""
-    with open(file_path, mode="r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -273,12 +274,14 @@ def handle_batch(args: argparse.Namespace, engine: GamanEngine) -> int:
     row_stream = _stream_csv_rows(input_path) if is_csv_input else _stream_jsonl_rows(input_path)
 
     # Process and write streaming
-    out_file = open(output_path, mode="w", encoding="utf-8", newline="") if output_path else sys.stdout
+    with (
+        open(output_path, "w", encoding="utf-8", newline="")
+        if output_path
+        else contextlib.nullcontext(sys.stdout)
+    ) as out_file:
+        csv_writer: csv.DictWriter | None = None
+        processed_count = 0
 
-    csv_writer: csv.DictWriter | None = None
-    processed_count = 0
-
-    try:
         for row in row_stream:
             state = _extract_state(row, args.state_column)
 
@@ -313,9 +316,6 @@ def handle_batch(args: argparse.Namespace, engine: GamanEngine) -> int:
                 out_file.write(json.dumps(augmented_row) + "\n")
 
             processed_count += 1
-    finally:
-        if output_path:
-            out_file.close()
 
     if output_path:
         print(f"[OK] Processed {processed_count} rows -> {output_path}")
@@ -487,7 +487,7 @@ def handle_calibrate(args: argparse.Namespace, engine: GamanEngine) -> int:
     ece_before = compute_ece(init_confs, init_preds, Y, strategy="quantile")
 
     # Optimize Temperature (with inverse beta convexity)
-    T_opt = fit_temperature(Z, Y, bounds=(0.1, 10.0), enforce_gating=False if total_samples < 30 else True)
+    T_opt = fit_temperature(Z, Y, bounds=(0.1, 10.0), enforce_gating=not total_samples < 30)
 
     # Calibrated metrics (T=T_opt)
     cal_nll = compute_nll(Z, Y, temperature=T_opt)

@@ -119,10 +119,7 @@ def compute_nll(
         return 0.0
 
     # Handle 1D binary logits by mapping to 2-class representation [0, z]
-    if logits.ndim == 1:
-        logits_2d = np.stack([np.zeros_like(logits), logits], axis=-1)
-    else:
-        logits_2d = logits
+    logits_2d = np.stack([np.zeros_like(logits), logits], axis=-1) if logits.ndim == 1 else logits
 
     temperature = max(float(temperature), 1e-6)
     scaled_logits = logits_2d / temperature
@@ -277,7 +274,7 @@ def load_calibration(path: str | Path) -> dict[str, Any]:
             "ece_after": None,
         }
 
-    with open(p, "r", encoding="utf-8") as f:
+    with open(p, encoding="utf-8") as f:
         data: dict[str, Any] = json.load(f)
 
     # Validate and ensure all default keys exist

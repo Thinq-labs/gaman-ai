@@ -12,10 +12,8 @@ Coverage areas:
     - build_nli_input: structural markers, ordering, exact format, determinism
 """
 
-import pytest
 
 from src.serializer import build_nli_input, flatten_state, serialize_state
-
 
 # ─── flatten_state ────────────────────────────────────────────────────────────
 

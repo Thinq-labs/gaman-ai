@@ -9,6 +9,7 @@ using the exact same universal pipeline without hardcoded domain schemas.
 """
 
 from pathlib import Path
+
 import pytest
 
 from src.engine import GamanEngine

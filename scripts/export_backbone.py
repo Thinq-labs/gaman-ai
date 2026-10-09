@@ -44,7 +44,6 @@ Output Artifacts (in --output_dir)
 
 import argparse
 import json
-import os
 import shutil
 import sys
 import time
@@ -234,7 +233,7 @@ def quantize_int8(fp32_path: Path, output_path: Path) -> None:
     except ImportError as exc:
         _die(f"onnxruntime.quantization not available: {exc}")
 
-    print(f"  Applying dynamic INT8 quantization...")
+    print("  Applying dynamic INT8 quantization...")
     t0 = time.perf_counter()
 
     quantize_dynamic(
@@ -356,7 +355,7 @@ def main() -> None:
         if args.skip_quantization:
             shutil.copy2(fp32_onnx, final_backbone)
             quantized = False
-            print(f"  [WARN] Quantization skipped. FP32 model saved as backbone.onnx")
+            print("  [WARN] Quantization skipped. FP32 model saved as backbone.onnx")
         else:
             if args.keep_fp32:
                 fp32_copy = output_dir / "backbone_fp32.onnx"

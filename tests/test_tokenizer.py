@@ -16,10 +16,10 @@ Test matrix:
     - TestFileNotFoundError — FileNotFoundError raised when artifact is missing
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-
-from pathlib import Path
 
 # ─── Guard: skip tokenizer-dependent tests if artifact is absent ──────────────
 MODELS_DIR = Path("models")
