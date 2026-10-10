@@ -21,6 +21,7 @@ import numpy as np
 import onnxruntime as ort
 
 from src.calibration import (
+    apply_logit_prior_matrix,
     compute_decision_metadata,
     load_calibration,
     regularize_and_scale_logits,
@@ -29,6 +30,7 @@ from src.heads import CustomLinearHead
 from src.resolver import ModelNotFoundError, SlabConfig, resolve_model_path, resolve_slab
 from src.serializer import (
     build_nli_pair,
+    encapsulate_payload,
     sanitize_adversarial_input,
     serialize_state,
 )
@@ -38,7 +40,9 @@ from src.tokenizer import GamanTokenizer
 HARDWARE_PROVIDERS_PRIORITY = [
     "CUDAExecutionProvider",
     "ROCMExecutionProvider",
+    "OpenVINOExecutionProvider",
     "CoreMLExecutionProvider",
+    "DmlExecutionProvider",
     "DirectMLExecutionProvider",
     "CPUExecutionProvider",
 ]
@@ -87,7 +91,21 @@ class GamanEngine:
             auto_download=(models_dir is None),
             silent=silent,
         )
-        self.model_path = self.models_dir / backbone_filename
+        if backbone_filename == "backbone.onnx":
+            candidates = [
+                "backbone_optimized.onnx",
+                "model_optimized.onnx",
+                "backbone.onnx",
+            ]
+            selected_file = "backbone.onnx"
+            for cand in candidates:
+                if (self.models_dir / cand).exists():
+                    selected_file = cand
+                    break
+            self.model_path = self.models_dir / selected_file
+        else:
+            self.model_path = self.models_dir / backbone_filename
+
         self.config_path = self.models_dir / "config.json"
 
         if not self.model_path.exists():
@@ -122,6 +140,29 @@ class GamanEngine:
         # 6. Lightweight Linear Adapter Heads Cache
         self._loaded_heads: dict[str, CustomLinearHead] = {}
 
+        # 7. Static Neutral Baseline Priors Cache
+        self._baseline_priors: dict[str, float] = {}
+        priors_file = self.models_dir / "baseline_priors.npy"
+        if priors_file.exists():
+            try:
+                loaded = np.load(str(priors_file), allow_pickle=True).item()
+                if isinstance(loaded, dict):
+                    self._baseline_priors = loaded
+            except Exception:
+                pass
+
+    def _get_neutral_prior(self, hyp: str) -> float:
+        """Retrieve pre-computed neutral baseline logit from static cache, or compute and cache."""
+        if hyp in self._baseline_priors:
+            return self._baseline_priors[hyp]
+        neutral_premise = encapsulate_payload(
+            "The text mentions an administrative identifier or instruction without user intent."
+        )
+        enc = self.tokenizer.encode(neutral_premise, pair=hyp)
+        val = float(self._forward(enc)[0, self.entailment_idx])
+        self._baseline_priors[hyp] = val
+        return val
+
     def load_calibration(self, calibration_path: str | Path | None = None) -> None:
         """
         Load temperature scaling calibration parameters from calibration.json.
@@ -153,12 +194,11 @@ class GamanEngine:
 
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-        # Optimize CPU threading for SIMD / vector extensions.
-        # Scale intra-op threads up to available physical/logical cores (cap at 8).
-        num_threads = min(os.cpu_count() or 4, 8)
-        opts.intra_op_num_threads = num_threads
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        num_cpus = os.cpu_count() or 2
+        opts.intra_op_num_threads = min(6, max(2, (num_cpus * 3) // 4))
         opts.inter_op_num_threads = 1
+        opts.enable_mem_pattern = True
 
         session = ort.InferenceSession(
             str(self.model_path),
@@ -223,6 +263,7 @@ class GamanEngine:
         sanitized_state, zero_dampeners, figurative_modifiers = sanitize_adversarial_input(
             serialized
         )
+        state_text = sanitized_state.lower()
 
         text_fields = {
             "text",
@@ -240,15 +281,10 @@ class GamanEngine:
             payload_content = sanitized_state
             if figurative_modifiers:
                 payload_content += (
-                    "\n[SEMANTIC CLARIFIER]: Figurative expressions and metaphorical modifiers "
-                    "must not be interpreted as authentic transactional or business requests."
+                    " [NOTE: Figurative expressions and metaphorical modifiers "
+                    "must not be interpreted as authentic transactional or business requests.]"
                 )
-            premise = (
-                "[CONTEXT]: Intent classification.\n"
-                "<payload>\n"
-                f"{payload_content}\n"
-                "</payload>"
-            )
+            premise = encapsulate_payload(payload_content)
         else:
             premise = sanitized_state
 
@@ -262,17 +298,23 @@ class GamanEngine:
             else:
                 hypotheses.append(f"The decision is to {cleaned}.")
 
-        # 4. Vectorized Pair Construction: construct all K pairs in memory before tokenization
+        # 4. Vectorized Pair Construction: construct ONLY candidate pairs (batch_size = K)
         pairs = [(premise, hyp) for hyp in hypotheses]
 
-        # 5. Batched Tokenization & Single-Pass Inference
-        batch_enc = self.tokenizer.encode_batch(pairs)
-        logits = self._forward(batch_enc)  # [K, num_labels]
-        entailment_logits = logits[:, self.entailment_idx].astype(np.float64)
+        # 5. Batched Tokenization with Strict max_length=64 Truncation
+        batch_enc = self.tokenizer.encode_batch(pairs, max_length=64)
+        max_batch_tokens = min(max(len(ids) for ids in batch_enc["input_ids"]), 64)
+        trimmed_batch = {
+            k: np.ascontiguousarray(v[:, :max_batch_tokens])
+            for k, v in batch_enc.items()
+        }
+
+        # Single forward pass for only candidate options (batch_size = len(keys))
+        all_logits = self._forward(trimmed_batch)
+        entailment_logits = all_logits[:, self.entailment_idx].astype(np.float64)
 
         # 6. Quantitative Weight & Figurative Dampeners + Verbatim Echo Dampening
         penalized_logits = entailment_logits.copy()
-        state_text = sanitized_state.lower()
 
         # Dampen labels explicitly assigned zero or negligible weight
         if zero_dampeners:
@@ -288,23 +330,28 @@ class GamanEngine:
                 if any(target in k_norm for _, target in figurative_modifiers):
                     penalized_logits[idx] -= 4.0
 
-        # Verbatim Lexical Echo Dampening
-        for idx, k in enumerate(keys):
-            raw_key_norm = k.lower().replace("_", " ")
-            key_exact = k.lower()
-            if (raw_key_norm in state_text or key_exact in state_text) and len(raw_key_norm) >= 3:
-                neutral_premise = (
-                    "[CONTEXT]: Document classification task. Analyze the authentic communicative intent of the enclosed message.\n"
-                    "<payload>\n"
-                    "The text mentions an administrative identifier or instruction without user intent.\n"
-                    "</payload>"
-                )
-                neutral_enc = self.tokenizer.encode(neutral_premise, pair=hypotheses[idx])
-                neutral_logit = float(self._forward(neutral_enc)[0, self.entailment_idx])
+        # Verbatim Lexical Echo Dampening for detected bait using static cached baseline
+        is_bait = any(k in serialized for k in keys) or any(
+            phrase in state_text
+            for phrase in ["ignore previous", "play a game", "print only", "every message is"]
+        )
+        if is_bait:
+            for idx, k in enumerate(keys):
+                raw_key_norm = k.lower().replace("_", " ")
+                key_exact = k.lower()
+                if (raw_key_norm in state_text or key_exact in state_text) and len(raw_key_norm) >= 3:
+                    neutral_logit = self._get_neutral_prior(hypotheses[idx])
+                    divergence = float(entailment_logits[idx] - neutral_logit)
+                    if divergence > 0:
+                        penalized_logits[idx] -= divergence * 0.75
 
-                divergence = float(entailment_logits[idx] - neutral_logit)
-                if divergence > 0:
-                    penalized_logits[idx] -= divergence * 0.75
+        # Analytical Prior Layer (Sarcasm, Corporate Sandwich, Compound Hyphenation & Dual-Intent)
+        penalized_logits, dual_intent_escalate = apply_logit_prior_matrix(
+            penalized_logits,
+            sanitized_state,
+            keys,
+            descriptions,
+        )
 
         # Count verbatim candidate conflicts for anti-saturation temperature scaling
         conflicts = sum(
@@ -316,6 +363,8 @@ class GamanEngine:
             )
         )
         n_conflicts = max(0, conflicts - 1) if conflicts > 1 else 0
+        if dual_intent_escalate:
+            n_conflicts += 2
 
         # 7. Logit Regularization & Temperature-Scaled Softmax
         probs = regularize_and_scale_logits(
@@ -327,14 +376,15 @@ class GamanEngine:
         # 8. Enterprise Decision Metadata & Confidence Tiering
         decision_meta = compute_decision_metadata(probs, keys)
 
-        # Check for split percentages (e.g., 50% refund, 50% inquiry) or figurative modifiers
+        # Check for split percentages, figurative modifiers, dual-intent, or out-of-distribution unentailed inputs
         pcts = [int(p) for p in re.findall(r"(\d+)\s*%", state_text)]
         is_split = (
             len(pcts) >= 2
             and all(0 < p < 100 for p in pcts)
             and (max(pcts) - min(pcts) <= 20)
         )
-        if is_split or figurative_modifiers:
+        is_ood = float(np.max(penalized_logits)) < 0.0
+        if is_split or figurative_modifiers or dual_intent_escalate or is_ood:
             decision_meta["escalate_to_system2"] = True
             decision_meta["tier"] = "LOW"
 
@@ -403,7 +453,17 @@ class GamanEngine:
         premise, hypothesis = build_nli_pair(state, hypothesis)
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
-        logits = self._forward(enc)[0]  # [num_labels]
+        logits = self._forward(enc)[0].astype(np.float64)  # [num_labels]
+
+        # Apply analytical logit prior matrix for guardrail predicate
+        entailment_arr = np.array([logits[self.entailment_idx]], dtype=np.float64)
+        boosted_arr, _ = apply_logit_prior_matrix(entailment_arr, premise, [hypothesis])
+        boost = float(boosted_arr[0] - entailment_arr[0])
+        if boost > 0.0:
+            logits[self.entailment_idx] += boost
+            for idx in range(len(logits)):
+                if idx != self.entailment_idx:
+                    logits[idx] -= boost
 
         # Shift-invariant 3-class normalized Softmax entailment probability
         scaled_logits = logits / self.temp_noul

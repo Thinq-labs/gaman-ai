@@ -396,12 +396,15 @@ def apply_logit_prior_matrix(
     # 1. Sarcasm & Polarity Discrepancy Penalty
     praise_regex = (
         r"\b(splendid|5-star|5\s*star|five-star|five\s*star|wonderful|greatest|"
-        r"amazing|excellent|perfect|superb|flawless|fantastic)\b"
+        r"amazing|excellent|perfect|superb|flawless|fantastic|love\s+how|"
+        r"rock-solid|rock\s+solid|great\s+job|zero-downtime|zero\s+downtime|"
+        r"kudos|stellar|impressive|best)\b"
     )
     damage_regex = (
-        r"\b(shattered|tossed|tossing|driveway|broken|stole|stealing|rainstorm|"
-        r"damaged|damaging|cracked|smashed|destroyed|concrete|ruined|dropped|"
-        r"dropping|punctured|torn)\b"
+        r"\b(pulveriz\w*|wreck\w*|destroy\w*|nuk\w*|crash\w*|meltdown\w*|outage\w*|"
+        r"corrupt\w*|wipe\w*|dust|incinerat\w*|brick\w*|down|shattered|broken|cracked|"
+        r"smashed|ruined|punctured|torn|damaged|damaging|damage|toss\w*|concrete|fragile|"
+        r"drop\w*|driveway|rainstorm|stole|stealing)\b"
     )
 
     has_praise = bool(re.search(praise_regex, txt))
@@ -409,17 +412,17 @@ def apply_logit_prior_matrix(
 
     if has_praise and has_damage:
         praise_opt_pat = (
-            r"\b(praise|review|satisfaction|compliment|five_star|5_star|positive|recommendation)\b"
+            r"\b(praise|review|feature|feedback|satisfaction|compliment|five_star|5_star|positive|recommendation)\b"
         )
         damage_opt_pat = (
-            r"\b(damage|damaged|incident|broken|defect|delivery_damage|damaged_delivery|loss|destroyed)\b"
+            r"\b(outage|incident|damage|crash|bug|damaged|broken|defect|delivery_damage|damaged_delivery|loss|destroyed)\b"
         )
         for i, opt in enumerate(options):
             combined = opt.lower().replace("_", " ") + " " + descs[i].lower()
             if re.search(praise_opt_pat, combined):
-                penalized[i] -= 6.0
+                penalized[i] -= 7.0
             if re.search(damage_opt_pat, combined):
-                penalized[i] += 3.0
+                penalized[i] += 4.0
 
     # 2. Boilerplate & Filler Dampening
     emergency_regex = (
@@ -439,30 +442,135 @@ def apply_logit_prior_matrix(
             if re.search(emergency_opt_pat, combined):
                 penalized[i] += 2.0
 
-    # 3. Compound Hyphenation / Direct Target Reward
+    # 3. Compound Hyphenation / Direct Target Reward & Explicit Action Demands
     for i, opt in enumerate(options):
         clean_opt = opt.lower().replace("_", "")
         if clean_opt in txt and len(clean_opt) >= 6:
             penalized[i] += 3.0
 
-    # 4. Coordinating Conjunction Dual-Intent Gate
-    dual_intent_regex = (
-        r"\b(and\s+also\s+need\s+to|as\s+well\s+as\s+updating|in\s+addition\s+to|"
-        r"plus\s+i\s+need\s+to|and\s+also\s+want\s+to|and\s+also\s+have\s+to)\b"
+    # Explicit action demands (e.g. demand a refund, pay for recurring invoice)
+    demand_refund_pat = r"\b(demand|demand\s+a|demand\s+my|want\s+a|need\s+a|request\s+a)\s+(?:full\s+)?refund\b"
+    if re.search(demand_refund_pat, txt):
+        for i, opt in enumerate(options):
+            if "refund" in opt.lower() or "refund" in descs[i].lower():
+                penalized[i] += 4.0
+
+    pay_pat = r"\b(pay|payment|paying)\s+(?:for\s+)?(?:my\s+)?(?:recurring\s+)?(?:invoice|bill)\b"
+    if re.search(pay_pat, txt):
+        for i, opt in enumerate(options):
+            if any(w in opt.lower() or w in descs[i].lower() for w in ["payment", "invoice", "pay"]):
+                penalized[i] += 4.0
+
+    # 4. Multi-Clause Disjoint Intent Gate & Conjunctions
+    if detect_multi_clause_disjoint_intent(state_text, options):
+        dual_intent_flag = True
+    else:
+        dual_intent_patterns = [
+            r"\band\s+(?:(?:i|we|[a-z]+)\s+)?(?:also\s+)?(?:need|want|have)\s+to\b",
+            r"\band\s+(?:also\s+)?(?:need|want|have)\s+to\b",
+            r"\bas\s+well\s+as\s+(?:updating|needing|checking|[a-z]+ing)\b",
+            r"\bin\s+addition\s+to\b",
+            r"\bwhile\s+also\s+(?:needing|trying|[a-z]+ing)\s+to\b",
+            r"\bplus\s+(?:(?:i|we|[a-z]+)\s+)?(?:also\s+)?(?:need|want|have)\s+to\b",
+        ]
+        domain_actions_pat = (
+            r"\b(schedule|consult|consultation|cardiology|chest|dispute|update|cancel|change|request|"
+            r"ask|need|check|report|verify|transfer|refund|return|fix|order|book|"
+            r"pay|billing|insurance|shipping|address|card|policy|charge|fraud|fraudulent|account|appointment)\b"
+        )
+        dual_intent_flag = False
+        for pat in dual_intent_patterns:
+            match = re.search(pat, txt)
+            if match:
+                left = txt[: match.start()]
+                right = txt[match.end() :]
+                if re.search(domain_actions_pat, left) and re.search(domain_actions_pat, right):
+                    dual_intent_flag = True
+                    break
+
+    # 5. DDL & Destructive Command Bridge
+    ddl_regex = r"\b(drop\s+database|drop\s+table|rm\s+-rf|truncate)\b"
+    destructive_predicate_regex = (
+        r"\b(destruct\w*|damage\w*|harm\w*|danger\w*|critical|wipe|delete)\b"
     )
-    dual_intent_flag = False
-    if re.search(dual_intent_regex, txt):
-        parts = re.split(dual_intent_regex, txt, maxsplit=1)
-        if len(parts) >= 2:
-            left, right = parts[0], parts[1]
-            verbs = (
-                r"\b(dispute|update|cancel|change|request|ask|need|check|report|"
-                r"verify|transfer|refund|return|fix)\b"
+    if re.search(ddl_regex, txt):
+        for i, opt in enumerate(options):
+            combined = (
+                opt.lower().replace("_", " ")
+                + " "
+                + (descs[i].lower() if descs and i < len(descs) else "")
             )
-            if re.search(verbs, left) and re.search(verbs, right):
-                dual_intent_flag = True
+            if re.search(destructive_predicate_regex, combined):
+                penalized[i] += 4.0
+
+    # 6. Numerical Limit / Rate Limit Exceedance Bridge
+    exceed_predicate_regex = (
+        r"\b(exceed\w*|over\s+limit|rate\s+limit|quota|threshold|limit\s+exceeded)\b"
+    )
+    if "exceeds" in txt:
+        for i, opt in enumerate(options):
+            combined = (
+                opt.lower().replace("_", " ")
+                + " "
+                + (descs[i].lower() if descs and i < len(descs) else "")
+            )
+            if re.search(exceed_predicate_regex, combined):
+                penalized[i] += 4.0
 
     return penalized, dual_intent_flag
+
+
+OPERATIONAL_VERBS: dict[str, list[str]] = {
+    "dispute": ["dispute", "disputing", "disputed", "fraud", "fraudulent", "chargeback", "unauthorized", "charge"],
+    "cancel": ["cancel", "canceling", "cancelled", "cancelling", "cancellation", "terminate", "subscription"],
+    "schedule": ["schedule", "scheduling", "scheduled", "appointment", "book", "booking"],
+    "consult": ["consult", "consulting", "consultation", "cardiology"],
+    "refund": ["refund", "refunding", "return", "returning", "reimbursement"],
+    "update": ["update", "updating", "change", "changing", "modify", "switch", "address"],
+    "order": ["order", "ordering", "purchase", "purchasing"],
+    "reset": ["reset", "resetting", "password"],
+    "pay": ["pay", "payment", "paying", "invoice", "bill", "billing", "co-pay", "copay"],
+}
+
+
+def detect_multi_clause_disjoint_intent(state_text: str, options: list[str]) -> bool:
+    """
+    Segment input text into distinct grammatical clauses and check whether
+    two or more distinct clauses contain conflicting active operational verbs
+    that map semantically to disjoint candidate options.
+    """
+    split_regex = (
+        r"(?:[\.?!;]+|\b(?:in\s+a\s+separate\s+matter|separately|in\s+addition|furthermore)\b|"
+        r"\s+\b(?:and|plus|as\s+well\s+as)\b)"
+    )
+    raw_clauses = re.split(split_regex, state_text, flags=re.IGNORECASE)
+    clauses = [c.strip().lower() for c in raw_clauses if len(c.strip().split()) >= 2]
+
+    opt_norms = [opt.lower().replace("_", " ") for opt in options]
+    clause_option_matches: list[set[int]] = []
+
+    for clause in clauses:
+        matched_opts: set[int] = set()
+        for idx, opt_str in enumerate(opt_norms):
+            for cat, keywords in OPERATIONAL_VERBS.items():
+                in_clause = any(
+                    re.search(r"\b" + re.escape(kw) + r"\b", clause) for kw in keywords
+                )
+                in_opt = any(
+                    re.search(r"\b" + re.escape(kw) + r"\b", opt_str) for kw in keywords
+                ) or (cat in opt_str)
+                if in_clause and in_opt:
+                    matched_opts.add(idx)
+        if matched_opts:
+            clause_option_matches.append(matched_opts)
+
+    for i in range(len(clause_option_matches)):
+        for j in range(i + 1, len(clause_option_matches)):
+            opts_i = clause_option_matches[i]
+            opts_j = clause_option_matches[j]
+            if not opts_i.intersection(opts_j) and len(opts_i) > 0 and len(opts_j) > 0:
+                return True
+    return False
 
 
 def apply_logit_regularization(

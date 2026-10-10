@@ -25,7 +25,9 @@ import onnxruntime as ort
 PROVIDER_PRIORITY = [
     "CUDAExecutionProvider",
     "ROCMExecutionProvider",
+    "OpenVINOExecutionProvider",
     "CoreMLExecutionProvider",
+    "DmlExecutionProvider",
     "DirectMLExecutionProvider",
     "CPUExecutionProvider",
 ]
@@ -307,23 +309,23 @@ def resolve_model_path(
     # 1. Priority 1: Explicit models_dir
     if actual_models_dir is not None:
         tiered = actual_models_dir / actual_tier
-        if (tiered / "backbone.onnx").exists():
+        if (tiered / "backbone_optimized.onnx").exists() or (tiered / "backbone.onnx").exists():
             return tiered
-        if (actual_models_dir / "backbone.onnx").exists():
+        if (actual_models_dir / "backbone_optimized.onnx").exists() or (actual_models_dir / "backbone.onnx").exists():
             return actual_models_dir
         return tiered
 
     # 2. Priority 2: Local Development (./models in current working directory)
     cwd_models = Path("models")
-    if (cwd_models / actual_tier / "backbone.onnx").exists():
+    if (cwd_models / actual_tier / "backbone_optimized.onnx").exists() or (cwd_models / actual_tier / "backbone.onnx").exists():
         return cwd_models / actual_tier
-    if (cwd_models / "backbone.onnx").exists():
+    if (cwd_models / "backbone_optimized.onnx").exists() or (cwd_models / "backbone.onnx").exists():
         return cwd_models
 
     # 3. Priority 3: Global OS Cache
     cache_dir = get_default_cache_dir()
     cached_tier = cache_dir / "models" / actual_tier
-    if (cached_tier / "backbone.onnx").exists():
+    if (cached_tier / "backbone_optimized.onnx").exists() or (cached_tier / "backbone.onnx").exists():
         return cached_tier
 
     # 4. Auto-Downloader

@@ -27,23 +27,25 @@ from typing import Any
 
 def collapse_spaced_tokens(text: str) -> str:
     """
-    Collapse sequences of single characters separated by '-', '_', or spaces
-    designed to break subword tokenization (e.g., 'R-E-F-U-N-D' -> 'REFUND',
-    'S P A M' -> 'SPAM', 'V_I_P' -> 'VIP', 'p-a-s-s-w-o-r-d-c-h-a-n-g-e' -> 'passwordchange').
+    Collapse sequences of single characters separated by dots, dashes, underscores,
+    slashes, or whitespace designed to break subword tokenization
+    (e.g., 'r.e.f.u.n.d' -> 'refund', 'p-a-y' -> 'pay', 'w_i_r_e' -> 'wire',
+    'R-E-F-U-N-D' -> 'REFUND', 'S P A M' -> 'SPAM', 'V_I_P' -> 'VIP',
+    'p-a-s-s-w-o-r-d-c-h-a-n-g-e' -> 'passwordchange').
 
-    Preserves standard hyphenated words like 'a-b testing'.
+    Preserves standard hyphenated words like 'a-b testing' and decimals like '10.5%'.
     """
-    # 1. Delimiter-separated single characters (hyphen): e.g. R-E-F-U-N-D, p-a-s-s-w-o-r-d-c-h-a-n-g-e
+    # 1. Non-whitespace delimiters: dots, dashes, underscores, slashes (length >= 3 single chars)
     text = re.sub(
-        r"\b([A-Za-z](?:-[A-Za-z]){3,})\b", lambda m: m.group(0).replace("-", ""), text
+        r"\b([A-Za-z](?:[\.\-_/][A-Za-z]){2,})\b",
+        lambda m: re.sub(r"[\.\-_/]", "", m.group(0)),
+        text,
     )
-    # 2. Underscore-separated single characters: e.g. V_I_P
+    # 2. Whitespace delimiter: single characters separated by spaces (length >= 3 single chars)
     text = re.sub(
-        r"\b([A-Za-z](?:_[A-Za-z]){2,})\b", lambda m: m.group(0).replace("_", ""), text
-    )
-    # 3. Space-separated single characters: e.g. S P A M, V I P
-    text = re.sub(
-        r"\b([A-Za-z](?:\s[A-Za-z]){2,})\b", lambda m: m.group(0).replace(" ", ""), text
+        r"\b([A-Za-z](?:\s[A-Za-z]){2,})\b",
+        lambda m: re.sub(r"\s", "", m.group(0)),
+        text,
     )
     return text
 
@@ -208,6 +210,16 @@ def sanitize_adversarial_input(
     return reweighted, dampeners, figuratives
 
 
+def encapsulate_payload(text: str) -> str:
+    """
+    Encapsulate text within lightweight structural fences («...») to sandbox
+    prompt injections and delimiter breakout attacks without adding verbose
+    preamble tokens.
+    """
+    clean = text.replace("«", "").replace("»", "")
+    return f"«{clean}»"
+
+
 # ─── Primitive value serializer ──────────────────────────────────────────────
 
 def _serialize_value(value: Any) -> str:
@@ -278,6 +290,10 @@ def serialize_state(state: dict[str, Any]) -> str:
     The same input dict will always produce the exact same output string,
     regardless of Python dict insertion order.
 
+    Handles:
+    - Command Semantic Framing: Keys 'command', 'cmd', or 'query' map to 'action: {val} (execute command)'.
+    - Numerical Limit Normalizer: When a metric count exceeds its limit/max, appends a relational clause.
+
     Args:
         state: Arbitrary JSON-compatible dict (any depth, any primitive values).
 
@@ -289,6 +305,9 @@ def serialize_state(state: dict[str, Any]) -> str:
         >>> serialize_state({"user_id": 123, "action": "delete_all"})
         'action: delete_all | user_id: 123'
 
+        >>> serialize_state({"command": "drop database production"})
+        'action: drop database production (execute command)'
+
         >>> serialize_state({"cpu": {"usage": 98}, "memory": 85})
         'cpu.usage: 98 | memory: 85'
 
@@ -296,7 +315,71 @@ def serialize_state(state: dict[str, Any]) -> str:
         ''
     """
     flat = flatten_state(state)
+
+    # Normalize snake_case in action values to natural words (e.g. drop_table -> drop table)
+    for k in list(flat.keys()):
+        if "action" in k.lower() and isinstance(flat[k], str):
+            flat[k] = flat[k].replace("_", " ")
+
+    # 1. DDL & Command Semantic Frame Bridge
+    command_keys = {"command", "cmd", "query"}
+    keys_to_remap = [
+        k for k in flat if k in command_keys or k.rsplit(".", 1)[-1] in command_keys
+    ]
+    for k in keys_to_remap:
+        val = flat.pop(k)
+        action_key = f"{k.rsplit('.', 1)[0]}.action" if "." in k else "action"
+        if action_key in flat:
+            flat[action_key] = f"{flat[action_key]} | {val} (execute command)"
+        else:
+            flat[action_key] = f"{val} (execute command)"
+
+    # 2. Numerical Limit Normalizer
+    relational_clauses: list[str] = []
+    metric_keys = [
+        k
+        for k in flat
+        if (
+            "_per_" in k.lower()
+            or k.lower().startswith("current_")
+            or k.lower() == "current"
+            or k.lower().endswith("_count")
+            or k.lower() == "count"
+            or k.lower().endswith("_usage")
+            or k.lower() == "usage"
+        )
+    ]
+    limit_keys = [
+        k
+        for k in flat
+        if (
+            k.lower() == "limit"
+            or k.lower().endswith("_limit")
+            or k.lower().startswith("limit_")
+            or k.lower() == "max"
+            or k.lower().endswith("_max")
+            or k.lower().startswith("max_")
+        )
+    ]
+
+    for mk in metric_keys:
+        try:
+            m_val = float(flat[mk])
+        except (ValueError, TypeError):
+            continue
+        for lk in limit_keys:
+            try:
+                l_val = float(flat[lk])
+            except (ValueError, TypeError):
+                continue
+            if m_val > l_val:
+                relational_clauses.append(
+                    f"{mk} of {flat[mk]} exceeds {lk} of {flat[lk]}."
+                )
+
     pairs = [f"{k}: {v}" for k, v in sorted(flat.items())]
+    if relational_clauses:
+        pairs.extend(sorted(relational_clauses))
     return " | ".join(pairs)
 
 

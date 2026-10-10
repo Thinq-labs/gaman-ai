@@ -118,7 +118,7 @@ class GamanTokenizer:
         return self._wrap_single(enc)
 
     def encode_batch(
-        self, inputs: list[str] | list[tuple[str, str]]
+        self, inputs: list[str] | list[tuple[str, str]], max_length: int | None = None
     ) -> dict[str, np.ndarray]:
         """
         Tokenize a batch of strings or (premise, hypothesis) pairs, dynamically
@@ -129,6 +129,7 @@ class GamanTokenizer:
 
         Args:
             inputs: List of strings OR list of (text, pair) tuples.
+            max_length: Optional maximum sequence length cap for dynamic padding.
 
         Returns:
             Dictionary with keys:
@@ -140,10 +141,19 @@ class GamanTokenizer:
             in the batch (all shorter sequences are zero-padded).
         """
         encs = self._tokenizer.encode_batch(inputs)
+        ids_list = [e.ids for e in encs]
+        mask_list = [e.attention_mask for e in encs]
+        type_list = [e.type_ids for e in encs]
+
+        if max_length is not None:
+            ids_list = [ids[:max_length] for ids in ids_list]
+            mask_list = [mask[:max_length] for mask in mask_list]
+            type_list = [types[:max_length] for types in type_list]
+
         return {
-            "input_ids": np.array([e.ids for e in encs], dtype=np.int64),
-            "attention_mask": np.array([e.attention_mask for e in encs], dtype=np.int64),
-            "token_type_ids": np.array([e.type_ids for e in encs], dtype=np.int64),
+            "input_ids": np.array(ids_list, dtype=np.int64),
+            "attention_mask": np.array(mask_list, dtype=np.int64),
+            "token_type_ids": np.array(type_list, dtype=np.int64),
         }
 
     # ── Internal helpers ──────────────────────────────────────────────────────
