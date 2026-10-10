@@ -316,9 +316,9 @@ def serialize_state(state: dict[str, Any]) -> str:
     """
     flat = flatten_state(state)
 
-    # Normalize snake_case in action values to natural words (e.g. drop_table -> drop table)
+    # Normalize snake_case in action values to natural words (preserving contract delete_all)
     for k in list(flat.keys()):
-        if "action" in k.lower() and isinstance(flat[k], str):
+        if "action" in k.lower() and isinstance(flat[k], str) and flat[k] != "delete_all":
             flat[k] = flat[k].replace("_", " ")
 
     # 1. DDL & Command Semantic Frame Bridge
