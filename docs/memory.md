@@ -64,3 +64,15 @@
   - `gaman info`: Tree-structured diagnostic view across Hardware Profile and Spec Slab.
   - Cross-platform Windows console UTF-8 stream reconfiguration (`sys.stdout.reconfigure(encoding="utf-8")`) preventing `cp1252` encoding errors.
   - 156/156 tests passing with zero regressions. Pure standard library (zero external dependencies).
+
+## Adversarial Hardening & Intent Expansion (Pillar 4)
+- **Problem:** Red-team auditing exposed vulnerability to prompt hijacking, roleplay jailbreaks, verbatim token injection bait, and out-of-distribution hallucinations (scoring 3.5/10).
+- **Hardening Enhancements (`src/engine.py`):**
+  1. *Delimiter Sandboxing & State Framing:* Free-form text and natural language states wrapped in `[CONTEXT]: Document classification task... <payload> {sanitized_state} </payload>`, neutralizing imperative prompt escapes while preserving pure operational telemetry formatting for infrastructure states.
+  2. *Semantic Intent Expansion:* `choice()` supports either discrete list of keys or `dict[str, str]` mapping options to rich semantic intent descriptions. SCREAMING_SNAKE_CASE keys are normalized to natural language intent hypotheses (`"The authentic primary intent of the message is {description}."`).
+  3. *Verbatim Lexical Echo Dampening:* Detects verbatim option keys in the input state and computes cross-entropy divergence against a neutral baseline, subtracting superficial token attraction from candidate logits.
+  4. *Entropy-Based OOD Gating:* Calculates normalized Shannon entropy $H(p) / \log K$. Flags `low_confidence = True` when normalized entropy exceeds 0.85 or when raw entailment logits fail to exceed zero under text classification contexts.
+- **Verification:**
+  - Added `tests/test_adversarial.py` testing prompt hijacking, roleplay jailbreak, token injection bait, gibberish token bait, and OOD query (5/5 passing).
+  - 161/161 tests passing across the entire test suite with 0 regressions.
+  - Ruff lint clean (0 errors).

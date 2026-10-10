@@ -178,51 +178,127 @@ class GamanEngine:
 
     # ── Primitives ────────────────────────────────────────────────────────────
 
-    def choice(self, state: dict[str, Any], options: list[str]) -> dict[str, Any]:
+    def choice(
+        self, state: dict[str, Any], options: list[str] | dict[str, str]
+    ) -> dict[str, Any]:
         """
         Semantic Routing: Evaluates state against K options using batched NLI cross-encoding.
+        Supports adversarial framing, delimiter sandboxing, semantic intent expansion,
+        verbatim token dampening, and entropy-based OOD gating.
 
         Args:
             state: Arbitrary JSON dictionary representing context.
-            options: List of discrete choice strings (K >= 1).
+            options: List of choice strings or mapping of choice keys to semantic definitions (K >= 1).
 
         Returns:
             dict matching Universal API Contract:
-            {"primitive": "choice", "selection": str, "confidence": float, "latency_ms": float}
+            {"primitive": "choice", "selection": str, "confidence": float, "probabilities": dict, "latency_ms": float, ...}
         """
         if not options:
             raise ValueError("options list cannot be empty")
 
         t0 = time.perf_counter()
-        premise = serialize_state(state)
-        # Action-oriented decision framing with clean option text
-        clean_options = [opt.replace("_", " ") for opt in options]
-        pairs = [(premise, f"The decision is to {opt}.") for opt in clean_options]
 
-        # Batched tokenization with dynamic batch padding
+        # 1. Parse option keys and semantic descriptions
+        if isinstance(options, dict):
+            keys = list(options.keys())
+            descriptions = [options[k] for k in keys]
+            has_dict_options = True
+        else:
+            keys = list(options)
+            descriptions = [k.replace("_", " ").lower() for k in keys]
+            has_dict_options = False
+
+        # 2. Input Encapsulation & Delimiter Sandboxing (Step 1)
+        # Wrap free-form natural language payloads in delimiters to neutralize prompt injection/jailbreaks.
+        # Preserve direct key-value state formatting for pure telemetry / system metrics.
+        sanitized_state = serialize_state(state)
+        text_fields = {"text", "message", "ticket", "body", "query", "prompt", "utterance", "input"}
+        is_text_payload = any(k in text_fields for k in state) or has_dict_options
+
+        if is_text_payload:
+            premise = (
+                "[CONTEXT]: Document classification task. Analyze the authentic communicative intent of the enclosed message.\n"
+                "<payload>\n"
+                f"{sanitized_state}\n"
+                "</payload>"
+            )
+        else:
+            premise = sanitized_state
+
+        # 3. Semantic Intent Hypotheses (Step 2)
+        hypotheses: list[str] = []
+        for desc in descriptions:
+            cleaned = desc.strip()
+            if has_dict_options or len(cleaned.split()) > 3 or cleaned.endswith("."):
+                cleaned_body = cleaned.rstrip(".")
+                hypotheses.append(f"The authentic primary intent of the message is {cleaned_body}.")
+            else:
+                hypotheses.append(f"The decision is to {cleaned}.")
+
+        pairs = [(premise, hyp) for hyp in hypotheses]
+
+        # 4. Batched tokenization & single parallel forward pass (batch_size = K)
         batch_enc = self.tokenizer.encode_batch(pairs)
-
-        # Single parallel forward pass (batch_size = K)
         logits = self._forward(batch_enc)  # [K, num_labels]
-        entailment_logits = logits[:, self.entailment_idx]
+        entailment_logits = logits[:, self.entailment_idx].astype(np.float64)
 
-        # Temperature-scaled Softmax over options
-        scaled_logits = entailment_logits / self.temp_choice
+        # 5. Verbatim Lexical Echo Dampening (Step 3.1)
+        # Detect if option key appears verbatim in input text and penalize superficial token match.
+        state_text = sanitized_state.lower()
+        penalized_logits = entailment_logits.copy()
+
+        for idx, k in enumerate(keys):
+            raw_key_norm = k.lower().replace("_", " ")
+            key_exact = k.lower()
+            if (raw_key_norm in state_text or key_exact in state_text) and len(raw_key_norm) >= 3:
+                neutral_premise = (
+                    "[CONTEXT]: Document classification task. Analyze the authentic communicative intent of the enclosed message.\n"
+                    "<payload>\n"
+                    "The text mentions an administrative identifier or instruction without user intent.\n"
+                    "</payload>"
+                )
+                neutral_enc = self.tokenizer.encode(neutral_premise, pair=hypotheses[idx])
+                neutral_logit = float(self._forward(neutral_enc)[0, self.entailment_idx])
+
+                divergence = float(entailment_logits[idx] - neutral_logit)
+                if divergence > 0:
+                    penalized_logits[idx] -= divergence * 0.75
+
+        # 6. Temperature Scaling & Softmax
+        scaled_logits = penalized_logits / self.temp_choice
         exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
         probs = exp_logits / np.sum(exp_logits)
 
+        # 7. Entropy-Based OOD Gating (Step 3.2)
+        # Compute Shannon entropy: H(p) = -sum p_i log p_i
+        num_options = len(keys)
+        entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
+        max_entropy = float(np.log(num_options)) if num_options > 1 else 1.0
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
+
+        is_ood = bool(
+            (num_options > 1 and normalized_entropy > 0.85)
+            or (np.all(entailment_logits < 0.0) and is_text_payload)
+        )
+
         best_idx = int(np.argmax(probs))
+        confidence = float(probs[best_idx])
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
-        return {
+        result: dict[str, Any] = {
             "primitive": "choice",
-            "selection": options[best_idx],
-            "confidence": float(round(float(probs[best_idx]), 4)),
+            "selection": keys[best_idx],
+            "confidence": float(round(confidence, 4)),
             "probabilities": {
-                opt: float(round(float(p), 4)) for opt, p in zip(options, probs, strict=True)
+                k: float(round(float(p), 4)) for k, p in zip(keys, probs, strict=True)
             },
             "latency_ms": float(round(latency_ms, 2)),
         }
+        if is_ood:
+            result["low_confidence"] = True
+
+        return result
 
     @staticmethod
     def _normalize_predicate(predicate: str) -> str:

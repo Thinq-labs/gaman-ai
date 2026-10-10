@@ -93,3 +93,20 @@
   - [x] `gaman info` displays global cache path and status.
 - [x] Write comprehensive tests in `tests/test_downloader.py` (10/10 passing).
 - [x] Record ADR 012 in `docs/adr.md`.
+
+---
+
+## v0.2 - Pillar 4: Adversarial Hardening & Intent Expansion
+- [x] Input Encapsulation & Delimiter Sandboxing:
+  - [x] Wrap conversational & free-form natural language state in `[CONTEXT]: Document classification task... <payload> {sanitized_state} </payload>`.
+  - [x] Neutralize imperative prompts, prompt injection, and jailbreak formatting.
+- [x] Semantic Intent Expansion:
+  - [x] Support dictionary options mapping choice keys to natural language intent definitions (`dict[str, str]`).
+  - [x] Naturalize SCREAMING_SNAKE_CASE option labels and format hypothesis templates as authentic communicative intent statements.
+- [x] Lexical Echo Dampening:
+  - [x] Detect verbatim token matches in input state and compute divergence against neutral baseline to penalize superficial token matching.
+- [x] Entropy-Based OOD Gating:
+  - [x] Calculate normalized Shannon entropy $H(p) / \log K$. Flag `low_confidence = True` when normalized entropy exceeds 0.85 or when entailment logits are negative.
+- [x] Comprehensive TDD Verification:
+  - [x] Created `tests/test_adversarial.py` covering prompt hijack, roleplay jailbreak, token injection bait, gibberish token, and out-of-distribution queries (5/5 passing).
+  - [x] All 161 tests passing across entire test suite with 0 regressions. Clean Ruff lint checks.
