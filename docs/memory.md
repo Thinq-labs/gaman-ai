@@ -38,3 +38,10 @@
 - **Problem:** GitHub macOS runners have CoreML available in ONNX Runtime, causing `resolve_slab("auto")` to select tier `base`. In CI, preflight had only populated `models/small/backbone.onnx`, throwing `ModelNotFoundError: Model tier 'base' not found in models/base`.
 - **Solution:** `scripts/ci_prepare_model.py` now exports to root `models/backbone.onnx` and guarantees both `models/small/` and `models/base/` tiers are populated.
 - **Test Resilience:** In `tests/test_engine.py`, `test_missing_model_raises_file_not_found` explicitly verifies `slab="small"` as well as auto-resolved tiers matching `r"Model tier '(small|base|large)' not found in"`.
+
+## CI Cache Isolation & Test Fixture Hygiene (fd4ae4a)
+- **Problem:** Stale `calibration.json` restored from GitHub Actions cache caused non-neutral temperature scaling ($T \ne 1.0$) during test runs, leading to assertion mismatches on `test_noul`.
+- **Solution:**
+  1. Updated cache key in `.github/workflows/ci.yml` to `gaman-models-v3-${{ runner.os }}-${{ matrix.python-version }}-...` to bust stale cache.
+  2. `scripts/ci_prepare_model.py` actively removes any residual `calibration.json` before test suite execution.
+  3. Added `_reset_shared_engine_temps` and `_reset_engine_temps` autouse fixtures in `tests/test_cli.py` and `tests/test_engine.py` to guarantee strict test isolation.
