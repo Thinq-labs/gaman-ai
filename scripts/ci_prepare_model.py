@@ -8,6 +8,7 @@ so automated Spec Slab hardware resolution (e.g. CoreML on macOS arm64 runners) 
 Cross-platform compatible across Linux, macOS, and Windows runners.
 """
 
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,11 @@ def prepare_model() -> int:
             for f in models_dir.iterdir():
                 if f.is_file():
                     shutil.copy2(f, tier_dir / f.name)
+
+    # Remove any stale calibration.json from cache so tests start with neutral T=1.0
+    for cal_file in models_dir.rglob("calibration.json"):
+        with contextlib.suppress(OSError):
+            cal_file.unlink()
 
     print("[CI PRE-FLIGHT] All model weights verified across root, small, and base tiers.")
     return 0

@@ -28,7 +28,18 @@ _requires_model = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def shared_engine():
     """Module-scoped engine instance to optimize test execution time (<8s)."""
-    return GamanEngine(models_dir=MODELS_DIR)
+    engine = GamanEngine(models_dir=MODELS_DIR)
+    engine.temp_choice = 1.0
+    engine.temp_noul = 1.0
+    engine.temp_score = 1.0
+    return engine
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_engine_temps(shared_engine: GamanEngine) -> None:
+    shared_engine.temp_choice = 1.0
+    shared_engine.temp_noul = 1.0
+    shared_engine.temp_score = 1.0
 
 
 def test_cli_help(capsys: pytest.CaptureFixture[str]) -> None:

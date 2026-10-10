@@ -35,9 +35,10 @@ jobs:
           path: |
             ~/.cache/huggingface
             models/
-          key: gaman-models-small-${{ runner.os }}-${{ hashFiles('scripts/export_backbone.py') }}
+          key: gaman-models-v3-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('scripts/export_backbone.py', 'scripts/ci_prepare_model.py') }}
           restore-keys: |
-            gaman-models-small-${{ runner.os }}-
+            gaman-models-v3-${{ runner.os }}-${{ matrix.python-version }}-
+            gaman-models-v3-${{ runner.os }}-
 
       - name: Install dependencies
         run: |

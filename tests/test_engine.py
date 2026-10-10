@@ -24,7 +24,18 @@ _requires_model = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def engine():
     """Module-scoped GamanEngine instance loaded from local models directory."""
-    return GamanEngine(models_dir=MODELS_DIR)
+    eng = GamanEngine(models_dir=MODELS_DIR)
+    eng.temp_choice = 1.0
+    eng.temp_noul = 1.0
+    eng.temp_score = 1.0
+    return eng
+
+
+@pytest.fixture(autouse=True)
+def _reset_engine_temps(engine: GamanEngine) -> None:
+    engine.temp_choice = 1.0
+    engine.temp_noul = 1.0
+    engine.temp_score = 1.0
 
 
 class TestEngineInit:
