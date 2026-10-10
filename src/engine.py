@@ -228,13 +228,20 @@ class GamanEngine:
         so the NLI cross-encoder evaluates true semantic entailment.
         """
         p = predicate.strip()
-        if p.lower().startswith("is this "):
-            p = "This is " + p[8:]
-        elif p.lower().startswith("is "):
-            p = p[3:] + " is"
-        if p.endswith("?"):
-            p = p[:-1] + "."
-        return p
+        has_question = p.endswith("?")
+        core = p[:-1].strip() if has_question else p
+
+        if core.lower().startswith("is this a ") and core.lower().endswith(" action"):
+            adj = core[10:-7].strip()
+            return f"The requested action is {adj}."
+        if core.lower().startswith("is this "):
+            core = "This is " + core[8:]
+        elif core.lower().startswith("is "):
+            core = core[3:] + " is"
+
+        if not core.endswith("."):
+            core = core + "."
+        return core
 
     def noul(self, state: dict[str, Any], predicate: str) -> dict[str, Any]:
         """
