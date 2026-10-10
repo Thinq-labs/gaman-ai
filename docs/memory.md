@@ -49,3 +49,18 @@
 ## Cross-Platform NLI Hypothesis Normalization Fix
 - **Problem:** In `noul`, `"Is this a destructive action?"` was normalized to `"This is a destructive action."`. With premise `"action: delete_all | user_id: 123"`, the lack of explicit antecedent for "This" resulted in borderline entailment vs neutral logits. On x86 Linux CPU and ARM64 macOS CPU, INT8 quantization differences shifted the probability below 0.5 (0.0236 on Linux, 0.2454 on macOS), failing `test_noul_human_readable`, `test_noul_json_schema`, and `test_noul_destructive_action_detected`.
 - **Solution:** Updated `_normalize_predicate` in `src/engine.py` to map interrogative action patterns (`"is this a <adj> action"`) directly into declarative policy hypotheses (`"The requested action is <adj>."`). This yields solid, unambiguous entailment ($p = 0.9681$) matching the API specification and completely immune to cross-platform quantization jitter.
+
+## Modern CLI UX & Tree-Style Downloader Overhaul
+- **Downloader Polish (`src/downloader.py`):**
+  - Replaced plain ASCII progress bar with an organized tree-style layout (`◆ Gaman AI: Bootstrapping model weights [tier: {tier}]` and `├─ {filename}  [{bar}] {downloaded}/{total} MB ({speed} MB/s)`).
+  - 30-character horizontal block character progress bar (`━`).
+  - Dynamic in-place carriage return (`\r`) updates with transfer speed in MB/s.
+  - Per-file checkmarks (`✔`) and tier completion summary (`✔ Model assets verified and cached to {target_dir}`).
+  - Strict non-TTY / piping discipline: automatically suppressed when not connected to a TTY or under `--json`.
+- **Modern Primitive CLI Layouts (`src/cli.py`):**
+  - `gaman choice`: Banner with latency and slab tier, tree selection, calibrated confidence, and proportional Unicode class distribution bar chart (`█`).
+  - `gaman noul`: Banner with latency, status (`PASSED ✔` or `FAILED ✖`), probability, and predicate.
+  - `gaman score`: Banner with latency, 20-character scalar gauge (`[██████████░░░░░░░░░░]`), and criterion.
+  - `gaman info`: Tree-structured diagnostic view across Hardware Profile and Spec Slab.
+  - Cross-platform Windows console UTF-8 stream reconfiguration (`sys.stdout.reconfigure(encoding="utf-8")`) preventing `cp1252` encoding errors.
+  - 156/156 tests passing with zero regressions. Pure standard library (zero external dependencies).

@@ -23,6 +23,13 @@ from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any
 
+# Ensure Windows terminal handles UTF-8 box-drawing and glyphs
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import numpy as np
 
 from src.calibration import (
@@ -75,9 +82,29 @@ def handle_choice(args: argparse.Namespace, engine: GamanEngine) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"Selection:  {result['selection']}")
-        print(f"Confidence: {result['confidence']:.4f}")
-        print(f"Latency:    {result['latency_ms']:.2f}ms")
+        tier = engine.slab_config.tier.upper() if hasattr(engine, "slab_config") else "SMALL"
+        latency = result["latency_ms"]
+        winner = result["selection"]
+        confidence = result["confidence"]
+        probs = result.get(
+            "probabilities",
+            {opt: (confidence if opt == winner else (1.0 - confidence) / max(1, len(options) - 1)) for opt in options},
+        )
+
+        print(f"⚡ GAMAN CHOICE  •  Latency: {latency:.1f}ms  •  {tier}")
+        print(f"┌─ Selection:   {winner}")
+        print(f"├─ Confidence:  {confidence:.1%} (calibrated)")
+        print("└─ Probabilities:")
+
+        opt_list = list(options)
+        max_opt_len = max(len(opt) for opt in opt_list)
+        for i, opt in enumerate(opt_list):
+            is_last = (i == len(opt_list) - 1)
+            branch = "   └─" if is_last else "   ├─"
+            p = float(probs.get(opt, 0.0))
+            bar_len = int(round(p * 20))
+            bar = "█" * bar_len
+            print(f"{branch} {opt:<{max_opt_len}}   {p:>5.1%}  {bar}")
     return 0
 
 
@@ -88,10 +115,22 @@ def handle_noul(args: argparse.Namespace, engine: GamanEngine) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        status_str = "PASSED" if result["passed"] else "FAILED"
-        print(f"Predicate:   {status_str}")
-        print(f"Probability: {result['probability']:.4f}")
-        print(f"Latency:     {result['latency_ms']:.2f}ms")
+        latency = result["latency_ms"]
+        prob = result["probability"]
+        passed = result["passed"]
+        is_tty = sys.stdout.isatty()
+
+        if passed:
+            status_tag = "PASSED"
+            icon = "\033[32m✔\033[0m" if is_tty else "✔"
+        else:
+            status_tag = "FAILED"
+            icon = "\033[31m✖\033[0m" if is_tty else "✖"
+
+        print(f"⚡ GAMAN GUARDRAIL  •  Latency: {latency:.1f}ms")
+        print(f"┌─ Status:       {status_tag}  {icon}")
+        print(f"├─ Probability:  {prob:.2%}")
+        print(f'└─ Predicate:    "{args.predicate}"')
     return 0
 
 
@@ -102,8 +141,15 @@ def handle_score(args: argparse.Namespace, engine: GamanEngine) -> int:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"Score:   {result['value']:.4f}")
-        print(f"Latency: {result['latency_ms']:.2f}ms")
+        latency = result["latency_ms"]
+        val = float(result["value"])
+        clamped = max(0.0, min(1.0, val))
+        filled = int(round(clamped * 20))
+        gauge = "█" * filled + "░" * (20 - filled)
+
+        print(f"⚡ GAMAN SCORE  •  Latency: {latency:.1f}ms")
+        print(f"┌─ Score:      {val:.4f}  [{gauge}]")
+        print(f'└─ Criterion:  "{args.criterion}"')
     return 0
 
 
@@ -571,25 +617,18 @@ def handle_info(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload, indent=2))
     else:
-        print("============================================================")
-        print("Gaman AI -- Hardware Profile & Spec Slab Resolution")
-        print("============================================================")
-        print("Hardware Profile:")
-        print(f"  System RAM:        {ram_gb:.1f} GB")
-        print(f"  Dedicated VRAM:    {vram_gb if vram_gb is not None else 'None'}")
-        print(f"  Logical CPU Cores: {profile.cpu_cores}")
-        print(f"  SIMD Acceleration: {profile.has_avx512_or_arm_neon}")
-        print(f"  Providers:         {', '.join(profile.providers)}")
-        print("\nSpec Slab Configuration:")
-        print(f"  Requested Slab:    {args.slab}")
-        print(f"  Resolved Tier:     {slab.tier.upper()}")
-        print(f"  Model ID:          {slab.model_id}")
-        print(f"  Quantization:      {slab.quantization}")
-        print(f"  Hidden Dimension:  {slab.hidden_dim}")
-        print(f"  Selected Provider: {slab.provider}")
-        print(f"  Model Path:        {model_dir} (exists: {(model_dir / 'backbone.onnx').exists()})")
-        print(f"  Global Cache:      {cache_dir} (exists: {models_cache.exists()})")
-        print("============================================================")
+        vram_str = f"{vram_gb:.1f} GB" if vram_gb is not None else "None"
+        providers_str = ", ".join(profile.providers)
+        print("◆ Gaman AI -- Hardware Profile & Spec Slab Resolution")
+        print("├─ Hardware Profile:")
+        print(f"│  ├─ System RAM:        {ram_gb:.1f} GB")
+        print(f"│  ├─ Dedicated VRAM:    {vram_str}")
+        print(f"│  ├─ Logical Cores:     {profile.cpu_cores}")
+        print(f"│  └─ Providers:         {providers_str}")
+        print("└─ Spec Slab:")
+        print(f"   ├─ Resolved Tier:     {slab.tier}")
+        print(f"   ├─ Model ID:          {slab.model_id}")
+        print(f"   └─ Cache Location:    {cache_dir}")
     return 0
 
 

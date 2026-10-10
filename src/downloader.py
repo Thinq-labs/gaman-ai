@@ -15,9 +15,15 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Ensure Windows terminal handles UTF-8 box-drawing and glyphs
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from src.resolver import get_default_cache_dir
 
@@ -50,15 +56,41 @@ def get_file_url(tier: str, filename: str) -> str:
     return f"https://huggingface.co/{repo}/resolve/main/{filename}"
 
 
-def _render_progress_bar(current: int, total: int, desc: str) -> None:
-    """Render a lightweight ASCII progress bar to sys.stdout."""
-    percent = min(100.0, (current / total) * 100.0)
-    bar_len = 25
-    filled = int(bar_len * current // total)
-    bar = "=" * max(0, filled - 1) + (">" if filled > 0 else "")
-    bar = bar.ljust(bar_len, " ")
+def _render_progress_line(
+    filename: str,
+    downloaded: int,
+    total: int,
+    start_time: float,
+    tree_prefix: str = "├─",
+) -> None:
+    """Render in-place dynamic tree-style progress bar using horizontal block characters (━)."""
+    elapsed = max(time.perf_counter() - start_time, 1e-6)
+    speed_mb_s = (downloaded / (1024 * 1024)) / elapsed
+    dl_mb = downloaded / (1024 * 1024)
     tot_mb = total / (1024 * 1024)
-    sys.stdout.write(f"\r{desc} ({tot_mb:.0f} MB)... [{bar}] {percent:.0f}%")
+
+    ratio = min(1.0, downloaded / total) if total > 0 else 0.0
+    bar_width = 30
+    filled = int(bar_width * ratio)
+    bar = "━" * filled + " " * (bar_width - filled)
+
+    line = f"\r{tree_prefix} {filename:<16} [{bar}] {dl_mb:.1f}/{tot_mb:.1f} MB ({speed_mb_s:.1f} MB/s)"
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
+def _render_file_complete(
+    filename: str,
+    total: int,
+    tree_prefix: str = "├─",
+) -> None:
+    """Mark file line with completion and checkmark."""
+    tot_mb = total / (1024 * 1024)
+    bar = "━" * 30
+    is_tty = sys.stdout.isatty()
+    check = "\033[32m✔\033[0m" if is_tty else "✔"
+    line = f"\r\033[K{tree_prefix} {filename:<16} [{bar}] {tot_mb:.1f}/{tot_mb:.1f} MB  {check}\n"
+    sys.stdout.write(line)
     sys.stdout.flush()
 
 
@@ -67,6 +99,7 @@ def download_file(
     target_path: Path,
     silent: bool = False,
     desc: str = "Downloading",
+    tree_prefix: str = "├─",
     chunk_size: int = 1024 * 1024,
 ) -> None:
     """
@@ -78,12 +111,14 @@ def download_file(
     tmp_path = target_path.with_name(f"{target_path.name}.tmp")
 
     show_progress = (not silent) and sys.stdout.isatty()
+    filename = target_path.name
 
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "gaman-ai-downloader/0.2.0"},
         )
+        t0 = time.perf_counter()
         with urllib.request.urlopen(req, timeout=30) as response:
             total_bytes = int(response.headers.get("Content-Length", 0))
             downloaded = 0
@@ -96,11 +131,20 @@ def download_file(
                     f.write(chunk)
                     downloaded += len(chunk)
                     if show_progress and total_bytes > 0:
-                        _render_progress_bar(downloaded, total_bytes, desc)
+                        _render_progress_line(
+                            filename=filename,
+                            downloaded=downloaded,
+                            total=total_bytes,
+                            start_time=t0,
+                            tree_prefix=tree_prefix,
+                        )
 
-        if show_progress and total_bytes > 0:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+        if show_progress:
+            _render_file_complete(
+                filename=filename,
+                total=downloaded if total_bytes == 0 else total_bytes,
+                tree_prefix=tree_prefix,
+            )
 
         # Atomic move to prevent corrupted partial files
         os.replace(tmp_path, target_path)
@@ -139,17 +183,25 @@ def ensure_model_tier(
         return tier_dir
 
     tier_dir.mkdir(parents=True, exist_ok=True)
+    show_progress = (not silent) and sys.stdout.isatty()
+
+    if show_progress:
+        print(f"◆ Gaman AI: Bootstrapping model weights [tier: {tier}]")
 
     # Download required files
     for filename in REQUIRED_TIER_FILES:
         target_file = tier_dir / filename
         if target_file.exists():
+            if show_progress:
+                check = "\033[32m✔\033[0m" if sys.stdout.isatty() else "✔"
+                tot_mb = target_file.stat().st_size / (1024 * 1024)
+                print(f"├─ {filename:<16} [{'━' * 30}] {tot_mb:.1f}/{tot_mb:.1f} MB  {check}")
             continue
 
         url = get_file_url(tier, filename)
         desc = f"Downloading Gaman AI '{tier}' {filename}"
         try:
-            download_file(url, target_file, silent=silent, desc=desc)
+            download_file(url, target_file, silent=silent, desc=desc, tree_prefix="├─")
         except DownloadError as exc:
             raise DownloadError(
                 f"Failed to download model tier '{tier}' asset '{filename}' from {url}. "
@@ -166,5 +218,9 @@ def ensure_model_tier(
         with contextlib.suppress(Exception):
             # Silently skip optional tokenizer/config files
             download_file(url, target_file, silent=True)
+
+    if show_progress:
+        check = "\033[32m✔\033[0m" if sys.stdout.isatty() else "✔"
+        print(f"{check} Model assets verified and cached to {tier_dir}")
 
     return tier_dir

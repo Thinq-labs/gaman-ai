@@ -218,6 +218,9 @@ class GamanEngine:
             "primitive": "choice",
             "selection": options[best_idx],
             "confidence": float(round(float(probs[best_idx]), 4)),
+            "probabilities": {
+                opt: float(round(float(p), 4)) for opt, p in zip(options, probs, strict=True)
+            },
             "latency_ms": float(round(latency_ms, 2)),
         }
 
