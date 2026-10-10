@@ -29,37 +29,22 @@ def collapse_spaced_tokens(text: str) -> str:
     """
     Collapse sequences of single characters separated by '-', '_', or spaces
     designed to break subword tokenization (e.g., 'R-E-F-U-N-D' -> 'REFUND',
-    'S P A M' -> 'SPAM', 'V_I_P' -> 'VIP').
+    'S P A M' -> 'SPAM', 'V_I_P' -> 'VIP', 'p-a-s-s-w-o-r-d-c-h-a-n-g-e' -> 'passwordchange').
 
     Preserves standard hyphenated words like 'a-b testing'.
     """
-    # 1. Delimiter-separated single characters (dash, underscore): e.g. R-E-F-U-N-D, V_I_P
-    def _repl_delim(m: re.Match[str]) -> str:
-        raw = m.group(1)
-        parts = re.split(r"[\-_]", raw)
-        if (
-            len(parts) >= 2
-            and all(len(p) == 1 for p in parts)
-            and (len(parts) >= 3 or all(p.isupper() for p in parts))
-        ):
-            return "".join(parts)
-        return raw
-
-    text = re.sub(r"\b([A-Za-z](?:[\-_][A-Za-z])+)\b", _repl_delim, text)
-
-    # 2. Space-separated single characters: e.g. S P A M, V I P
-    def _repl_spaces(m: re.Match[str]) -> str:
-        raw = m.group(1)
-        parts = raw.split()
-        if (
-            len(parts) >= 2
-            and all(len(p) == 1 for p in parts)
-            and (len(parts) >= 3 or all(p.isupper() for p in parts))
-        ):
-            return "".join(parts)
-        return raw
-
-    text = re.sub(r"(?<=\b)([A-Za-z](?: [A-Za-z])+)(?=\b)", _repl_spaces, text)
+    # 1. Delimiter-separated single characters (hyphen): e.g. R-E-F-U-N-D, p-a-s-s-w-o-r-d-c-h-a-n-g-e
+    text = re.sub(
+        r"\b([A-Za-z](?:-[A-Za-z]){3,})\b", lambda m: m.group(0).replace("-", ""), text
+    )
+    # 2. Underscore-separated single characters: e.g. V_I_P
+    text = re.sub(
+        r"\b([A-Za-z](?:_[A-Za-z]){2,})\b", lambda m: m.group(0).replace("_", ""), text
+    )
+    # 3. Space-separated single characters: e.g. S P A M, V I P
+    text = re.sub(
+        r"\b([A-Za-z](?:\s[A-Za-z]){2,})\b", lambda m: m.group(0).replace(" ", ""), text
+    )
     return text
 
 

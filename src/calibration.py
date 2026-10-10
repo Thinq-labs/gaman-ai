@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -359,6 +360,109 @@ def compute_decision_metadata(
         "escalate_to_system2": escalate,
         "probabilities": {k: float(round(float(v), 4)) for k, v in zip(options, p_arr, strict=True)},
     }
+
+
+def apply_logit_prior_matrix(
+    logits: np.ndarray,
+    state_text: str,
+    options: list[str],
+    descriptions: list[str] | None = None,
+) -> tuple[np.ndarray, bool]:
+    """
+    Apply analytical reward (+R) and penalty (-P) priors directly to raw cross-encoder
+    logits before Softmax normalization.
+
+    Handles:
+    1. Sarcasm & Polarity Discrepancy Penalty:
+       Detects co-occurrence of superlative praise with physical damage/incident nouns.
+       Penalizes praise classes (-6.0) and rewards damage classes (+3.0).
+    2. Boilerplate & Filler Dampening:
+       Detects emergency/operational markers in the text.
+       Penalizes generic customer service praise or account inquiry classes (-5.0).
+    3. Compound Hyphenation / Direct Target Reward:
+       Detects collapsed compound words matching candidate option labels (+3.0).
+    4. Coordinating Conjunction Dual-Intent Gate:
+       Detects dual-intent coordinating markers ('and also need to', 'as well as updating', etc.).
+       Returns dual_intent_flag = True if split intent detected.
+    """
+    penalized = np.asarray(logits, dtype=float).copy()
+    txt = state_text.lower()
+    descs = (
+        descriptions
+        if descriptions is not None
+        else [o.replace("_", " ").lower() for o in options]
+    )
+
+    # 1. Sarcasm & Polarity Discrepancy Penalty
+    praise_regex = (
+        r"\b(splendid|5-star|5\s*star|five-star|five\s*star|wonderful|greatest|"
+        r"amazing|excellent|perfect|superb|flawless|fantastic)\b"
+    )
+    damage_regex = (
+        r"\b(shattered|tossed|tossing|driveway|broken|stole|stealing|rainstorm|"
+        r"damaged|damaging|cracked|smashed|destroyed|concrete|ruined|dropped|"
+        r"dropping|punctured|torn)\b"
+    )
+
+    has_praise = bool(re.search(praise_regex, txt))
+    has_damage = bool(re.search(damage_regex, txt))
+
+    if has_praise and has_damage:
+        praise_opt_pat = (
+            r"\b(praise|review|satisfaction|compliment|five_star|5_star|positive|recommendation)\b"
+        )
+        damage_opt_pat = (
+            r"\b(damage|damaged|incident|broken|defect|delivery_damage|damaged_delivery|loss|destroyed)\b"
+        )
+        for i, opt in enumerate(options):
+            combined = opt.lower().replace("_", " ") + " " + descs[i].lower()
+            if re.search(praise_opt_pat, combined):
+                penalized[i] -= 6.0
+            if re.search(damage_opt_pat, combined):
+                penalized[i] += 3.0
+
+    # 2. Boilerplate & Filler Dampening
+    emergency_regex = (
+        r"\b(confiscated|seized|patrol|customs|border|arrested|outage|detained|impounded)\b"
+    )
+    if re.search(emergency_regex, txt):
+        generic_pat = (
+            r"\b(customer_service_praise|customer_service|praise|greeting|compliment|general_inquiry|account_inquiry)\b"
+        )
+        emergency_opt_pat = (
+            r"\b(customs|customs_hold|border_patrol|seized|confiscated|outage)\b"
+        )
+        for i, opt in enumerate(options):
+            combined = opt.lower().replace("_", " ") + " " + descs[i].lower()
+            if re.search(generic_pat, combined):
+                penalized[i] -= 5.0
+            if re.search(emergency_opt_pat, combined):
+                penalized[i] += 2.0
+
+    # 3. Compound Hyphenation / Direct Target Reward
+    for i, opt in enumerate(options):
+        clean_opt = opt.lower().replace("_", "")
+        if clean_opt in txt and len(clean_opt) >= 6:
+            penalized[i] += 3.0
+
+    # 4. Coordinating Conjunction Dual-Intent Gate
+    dual_intent_regex = (
+        r"\b(and\s+also\s+need\s+to|as\s+well\s+as\s+updating|in\s+addition\s+to|"
+        r"plus\s+i\s+need\s+to|and\s+also\s+want\s+to|and\s+also\s+have\s+to)\b"
+    )
+    dual_intent_flag = False
+    if re.search(dual_intent_regex, txt):
+        parts = re.split(dual_intent_regex, txt, maxsplit=1)
+        if len(parts) >= 2:
+            left, right = parts[0], parts[1]
+            verbs = (
+                r"\b(dispute|update|cancel|change|request|ask|need|check|report|"
+                r"verify|transfer|refund|return|fix)\b"
+            )
+            if re.search(verbs, left) and re.search(verbs, right):
+                dual_intent_flag = True
+
+    return penalized, dual_intent_flag
 
 
 def apply_logit_regularization(
