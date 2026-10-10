@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -19,10 +20,18 @@ from typing import Any
 import numpy as np
 import onnxruntime as ort
 
-from src.calibration import load_calibration
+from src.calibration import (
+    compute_decision_metadata,
+    load_calibration,
+    regularize_and_scale_logits,
+)
 from src.heads import CustomLinearHead
 from src.resolver import ModelNotFoundError, SlabConfig, resolve_model_path, resolve_slab
-from src.serializer import build_nli_pair, serialize_state
+from src.serializer import (
+    build_nli_pair,
+    sanitize_adversarial_input,
+    serialize_state,
+)
 from src.tokenizer import GamanTokenizer
 
 # Hardware dispatch priority per spec §4
@@ -146,8 +155,8 @@ class GamanEngine:
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         # Optimize CPU threading for SIMD / vector extensions.
-        # Cap at 4 intra-op threads to prevent core contention on hybrid CPU architectures.
-        num_threads = min(os.cpu_count() or 4, 4)
+        # Scale intra-op threads up to available physical/logical cores (cap at 8).
+        num_threads = min(os.cpu_count() or 4, 8)
         opts.intra_op_num_threads = num_threads
         opts.inter_op_num_threads = 1
 
@@ -209,45 +218,77 @@ class GamanEngine:
             descriptions = [k.replace("_", " ").lower() for k in keys]
             has_dict_options = False
 
-        # 2. Input Encapsulation & Delimiter Sandboxing (Step 1)
-        # Wrap free-form natural language payloads in delimiters to neutralize prompt injection/jailbreaks.
-        # Preserve direct key-value state formatting for pure telemetry / system metrics.
-        sanitized_state = serialize_state(state)
-        text_fields = {"text", "message", "ticket", "body", "query", "prompt", "utterance", "input"}
+        # 2. Pre-Tokenization Sanitization & Delimiter Sandboxing
+        serialized = serialize_state(state)
+        sanitized_state, zero_dampeners, figurative_modifiers = sanitize_adversarial_input(
+            serialized
+        )
+
+        text_fields = {
+            "text",
+            "message",
+            "ticket",
+            "body",
+            "query",
+            "prompt",
+            "utterance",
+            "input",
+        }
         is_text_payload = any(k in text_fields for k in state) or has_dict_options
 
         if is_text_payload:
+            payload_content = sanitized_state
+            if figurative_modifiers:
+                payload_content += (
+                    "\n[SEMANTIC CLARIFIER]: Figurative expressions and metaphorical modifiers "
+                    "must not be interpreted as authentic transactional or business requests."
+                )
             premise = (
-                "[CONTEXT]: Document classification task. Analyze the authentic communicative intent of the enclosed message.\n"
+                "[CONTEXT]: Intent classification.\n"
                 "<payload>\n"
-                f"{sanitized_state}\n"
+                f"{payload_content}\n"
                 "</payload>"
             )
         else:
             premise = sanitized_state
 
-        # 3. Semantic Intent Hypotheses (Step 2)
+        # 3. Semantic Intent Hypotheses
         hypotheses: list[str] = []
         for desc in descriptions:
             cleaned = desc.strip()
-            if has_dict_options or len(cleaned.split()) > 3 or cleaned.endswith("."):
+            if is_text_payload or has_dict_options or len(cleaned.split()) > 3 or cleaned.endswith("."):
                 cleaned_body = cleaned.rstrip(".")
                 hypotheses.append(f"The authentic primary intent of the message is {cleaned_body}.")
             else:
                 hypotheses.append(f"The decision is to {cleaned}.")
 
+        # 4. Vectorized Pair Construction: construct all K pairs in memory before tokenization
         pairs = [(premise, hyp) for hyp in hypotheses]
 
-        # 4. Batched tokenization & single parallel forward pass (batch_size = K)
+        # 5. Batched Tokenization & Single-Pass Inference
         batch_enc = self.tokenizer.encode_batch(pairs)
         logits = self._forward(batch_enc)  # [K, num_labels]
         entailment_logits = logits[:, self.entailment_idx].astype(np.float64)
 
-        # 5. Verbatim Lexical Echo Dampening (Step 3.1)
-        # Detect if option key appears verbatim in input text and penalize superficial token match.
-        state_text = sanitized_state.lower()
+        # 6. Quantitative Weight & Figurative Dampeners + Verbatim Echo Dampening
         penalized_logits = entailment_logits.copy()
+        state_text = sanitized_state.lower()
 
+        # Dampen labels explicitly assigned zero or negligible weight
+        if zero_dampeners:
+            for idx, k in enumerate(keys):
+                k_norm = k.lower().replace("_", " ")
+                if any(d in k_norm for d in zero_dampeners):
+                    penalized_logits[idx] -= 5.0
+
+        # Dampen labels bound to figurative qualifiers
+        if figurative_modifiers:
+            for idx, k in enumerate(keys):
+                k_norm = k.lower().replace("_", " ")
+                if any(target in k_norm for _, target in figurative_modifiers):
+                    penalized_logits[idx] -= 4.0
+
+        # Verbatim Lexical Echo Dampening
         for idx, k in enumerate(keys):
             raw_key_norm = k.lower().replace("_", " ")
             key_exact = k.lower()
@@ -265,40 +306,63 @@ class GamanEngine:
                 if divergence > 0:
                     penalized_logits[idx] -= divergence * 0.75
 
-        # 6. Temperature Scaling & Softmax
-        scaled_logits = penalized_logits / self.temp_choice
-        exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
-        probs = exp_logits / np.sum(exp_logits)
+        # Count verbatim candidate conflicts for anti-saturation temperature scaling
+        conflicts = sum(
+            1
+            for k in keys
+            if (
+                (k.lower().replace("_", " ") in state_text or k.lower() in state_text)
+                and len(k.lower().replace("_", " ")) >= 3
+            )
+        )
+        n_conflicts = max(0, conflicts - 1) if conflicts > 1 else 0
 
-        # 7. Entropy-Based OOD Gating (Step 3.2)
-        # Compute Shannon entropy: H(p) = -sum p_i log p_i
-        num_options = len(keys)
-        entropy = float(-np.sum(probs * np.log(probs + 1e-12)))
-        max_entropy = float(np.log(num_options)) if num_options > 1 else 1.0
-        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
-
-        is_ood = bool(
-            (num_options > 1 and normalized_entropy > 0.85)
-            or (np.all(entailment_logits < 0.0) and is_text_payload)
+        # 7. Logit Regularization & Temperature-Scaled Softmax
+        probs = regularize_and_scale_logits(
+            penalized_logits,
+            temp=self.temp_choice,
+            n_conflicts=n_conflicts,
         )
 
-        best_idx = int(np.argmax(probs))
-        confidence = float(probs[best_idx])
+        # 8. Enterprise Decision Metadata & Confidence Tiering
+        decision_meta = compute_decision_metadata(probs, keys)
+
+        # Check for split percentages (e.g., 50% refund, 50% inquiry) or figurative modifiers
+        pcts = [int(p) for p in re.findall(r"(\d+)\s*%", state_text)]
+        is_split = (
+            len(pcts) >= 2
+            and all(0 < p < 100 for p in pcts)
+            and (max(pcts) - min(pcts) <= 20)
+        )
+        if is_split or figurative_modifiers:
+            decision_meta["escalate_to_system2"] = True
+            decision_meta["tier"] = "LOW"
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         result: dict[str, Any] = {
             "primitive": "choice",
-            "selection": keys[best_idx],
-            "confidence": float(round(confidence, 4)),
-            "probabilities": {
-                k: float(round(float(p), 4)) for k, p in zip(keys, probs, strict=True)
-            },
+            "selection": decision_meta["selection"],
+            "confidence": decision_meta["confidence"],
+            "margin": decision_meta["margin"],
+            "entropy": decision_meta["entropy"],
+            "tier": decision_meta["tier"],
+            "escalate_to_system2": decision_meta["escalate_to_system2"],
+            "probabilities": decision_meta["probabilities"],
             "latency_ms": float(round(latency_ms, 2)),
         }
-        if is_ood:
+        if decision_meta["escalate_to_system2"]:
             result["low_confidence"] = True
 
         return result
+
+    def decide(
+        self, state: dict[str, Any], options: list[str] | dict[str, str]
+    ) -> dict[str, Any]:
+        """
+        Alias for choice() providing the enterprise decision contract.
+        """
+        return self.choice(state, options)
 
     @staticmethod
     def _normalize_predicate(predicate: str) -> str:

@@ -76,3 +76,45 @@
   - Added `tests/test_adversarial.py` testing prompt hijacking, roleplay jailbreak, token injection bait, gibberish token bait, and OOD query (5/5 passing).
   - 161/161 tests passing across the entire test suite with 0 regressions.
   - Ruff lint clean (0 errors).
+
+## Enterprise Calibration, Sub-50ms Batching & Pre-Tokenizer Hardening (Pillar 5)
+- **Problem:** Sequential inference calls for candidate evaluations resulted in latency overhead (180ms–350ms); subword evasion (spaced tokens like `R-E-F-U-N-D`, `S P A M`) and figurative qualifiers (`emotional refund`) evaded tokenization and semantic boundaries; decision contracts lacked operational confidence tiering and System 2 escalation metadata.
+- **Implementations:**
+  1. *Sub-50ms Single-Pass ONNX Batching (`src/engine.py`):*
+     - Vectorized pair construction constructs all $K$ `(premise, hypothesis)` string pairs in memory before tokenization.
+     - Tokenizes simultaneously with dynamic padding `(K, max_seq_length)` and executes a single batched `session.run` call per `choice` / `decide` invocation.
+     - Single vectorized NumPy operation for temperature scaling and Softmax over candidate entailment logits.
+     - Scaled intra-op thread allocation (`min(os.cpu_count() or 4, 8)`) for optimized SIMD execution on edge hardware.
+  2. *Pre-Tokenization Adversarial Normalizer (`src/serializer.py`):*
+     - `collapse_spaced_tokens`: collapses delimiter-separated characters (`R-E-F-U-N-D` $\to$ `REFUND`, `S P A M` $\to$ `SPAM`, `V_I_P` $\to$ `VIP`) while preserving hyphenated multi-letter words (`a-b testing`).
+     - `extract_zero_percentage_dampeners`: extracts explicit zero-weight cancellations (`0% spam`, `no intention of asking for a refund`) and dampens corresponding candidate logits.
+     - `extract_figurative_modifiers`: flags figurative qualifiers (`emotional refund`, `metaphorical override`) and injects boundary clarifiers to prevent literal contractual binding.
+  3. *Professional Calibration & Enterprise Metadata (`src/calibration.py`):*
+     - `compute_decision_metadata`: computes Shannon entropy $H(P) = -\sum p_i \ln(p_i + 1e-12)$, normalized margin $M = p_{(1)} - p_{(2)}$, operational confidence tier (`HIGH`, `MEDIUM`, `LOW`), and System 2 escalation trigger (`escalate_to_system2`).
+     - Added `GamanEngine.decide` alias providing the enterprise decision contract.
+     - Modernized CLI tree visualization (`src/cli.py`) with tier badge, margin, entropy, and System 1 approval / System 2 escalation flags.
+  4. *API Contract Update (`docs/api_contract.md`):*
+     - Documented `margin`, `entropy`, `tier`, `escalate_to_system2`, and full `probabilities` dictionary in the `choice` primitive specification.
+- **Verification:**
+  - Added `tests/test_hardened_engine.py` verifying single-pass batching assertion, obfuscation collapse scoring, ambiguity escalation, and latency benchmarks (10/10 passing).
+  - All 171 tests passing across the entire test suite (156 baseline + 5 adversarial + 10 hardened engine). Clean Ruff checks (0 errors).
+
+## Salience Cleaning, Adversative Splitting & Logit Regularization (Pillar 6)
+- **Problem:** Cross-encoders suffered from the Sandwich Trap (conversational greetings and administrative signoffs smearing positional attention over actual intent), Counterfactual Bias (inability to negate conditional distractors such as `If I wanted X... instead Y`), and Softmax Over-Saturation (extreme logit values producing premature $\ge 99\%$ certainty on spurious token overlaps).
+- **Implementations:**
+  1. *Boilerplate & Salience Stripper (`src/serializer.py`):*
+     - `strip_conversational_boilerplate`: strips leading greetings (`Hello team`, `Hope you are well`, `Good morning`) and trailing boilerplate (`Let me know when you fix...`, `Thanks in advance`, `fix tracking link`), preserving terminal sentence periods and retaining domain verbs.
+  2. *Adversative Clause Re-Weighting (`src/serializer.py`):*
+     - `reweight_adversative_clauses`: detects adversative markers (`instead`, `however`, `rather than`, `in reality`, `actually`) and counterfactual structures (`If condition, instead resolution`).
+     - Extracts the resolution clause and prepends it to the front of context (`{resolution}. {rest}`) so bidirectional self-attention heads prioritize authentic intent over conditional premise distractors.
+  3. *Logit Regularization & Mathematical Shift Invariance (`src/calibration.py`):*
+     - `apply_logit_regularization`: clamps unnormalized logits to `[-8.0, 8.0]` and applies dynamic temperature scaling based on candidate conflicts: $T_{\text{eff}} = T \cdot (1.0 + 0.25 \cdot N_{\text{conflicts}})$.
+     - `regularize_and_scale_logits`: zero-centers logits along the decision axis before clamping, mathematically guaranteeing shift invariance ($z + C \implies \text{identical Softmax}$) while capping extreme probability over-saturation to $<95\%$ on narrow-margin ties.
+  4. *Engine Integration (`src/engine.py`):*
+     - Integrated `sanitize_adversarial_input` across `choice()`.
+     - Standardized hypothesis framing for all text payloads: `"The authentic primary intent of the message is {cleaned_body}."`.
+     - Added verbatim candidate conflict counting and integrated `regularize_and_scale_logits`.
+- **Verification:**
+  - Created `tests/test_salience_hardening.py` with 11 unit and integration tests (Sandwich Trap, Counterfactual test, logit clamping bounds, conflict temperature scaling, saturation prevention).
+  - Full test suite passing: **182 passed in 37.39s** (0 failed, 0 skipped).
+  - Clean Ruff linter checks (0 errors).

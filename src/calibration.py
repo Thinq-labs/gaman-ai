@@ -304,3 +304,123 @@ def save_calibration(calibration_data: dict[str, Any], path: str | Path) -> None
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         json.dump(calibration_data, f, indent=2)
+
+
+def compute_decision_metadata(
+    probs: list[float] | np.ndarray,
+    options: list[str],
+) -> dict[str, Any]:
+    """
+    Compute enterprise decision metadata from a calibrated probability distribution:
+    - Shannon Entropy: H(P) = -sum p_i ln(p_i + 1e-12)
+    - Normalized Margin: M = p_(1) - p_(2) (top-1 minus runner-up)
+    - Tier: "HIGH" (p_max >= 0.70 and margin >= 0.35) | "MEDIUM" (p_max >= 0.50) | "LOW"
+    - Escalation: True if p_max < 0.50 or margin < 0.20 or entropy > 0.85 * ln(K)
+
+    Args:
+        probs: 1D probability distribution across options.
+        options: List of choice option labels.
+
+    Returns:
+        Dictionary containing enterprise decision contract fields.
+    """
+    p_arr = np.asarray(probs, dtype=float)
+    if len(p_arr) != len(options):
+        raise ValueError("probs length must match options length")
+
+    best_idx = int(np.argmax(p_arr))
+    winner = options[best_idx]
+    p_max = float(p_arr[best_idx])
+
+    # Runner-up probability & margin
+    sorted_p = np.sort(p_arr)[::-1]
+    p_runner_up = float(sorted_p[1]) if len(sorted_p) > 1 else 0.0
+    margin = float(p_max - p_runner_up)
+
+    # Shannon Entropy
+    entropy = float(-np.sum(p_arr * np.log(p_arr + 1e-12)))
+
+    K = len(options)
+    tier = (
+        "HIGH"
+        if p_max >= 0.70 and margin >= 0.35
+        else ("MEDIUM" if p_max >= 0.50 else "LOW")
+    )
+    escalate = bool(
+        p_max < 0.50 or margin < 0.20 or (K > 1 and entropy > 0.85 * np.log(K))
+    )
+
+    return {
+        "selection": winner,
+        "confidence": float(round(p_max, 4)),
+        "margin": float(round(margin, 4)),
+        "entropy": float(round(entropy, 4)),
+        "tier": tier,
+        "escalate_to_system2": escalate,
+        "probabilities": {k: float(round(float(v), 4)) for k, v in zip(options, p_arr, strict=True)},
+    }
+
+
+def apply_logit_regularization(
+    logits: np.ndarray,
+    temp: float = 1.0,
+    n_conflicts: int = 0,
+    clip_range: tuple[float, float] = (-8.0, 8.0),
+) -> tuple[np.ndarray, float]:
+    """
+    Apply logit clipping and conflict-aware dynamic temperature scaling.
+
+    Mitigates Softmax over-saturation and resolves lexical ambiguity by:
+    1. Clamping unnormalized logits to clip_range (default: [-8.0, 8.0]).
+    2. Scaling temperature dynamically based on conflict count:
+       T_eff = T * (1.0 + 0.25 * n_conflicts).
+
+    Args:
+        logits: Unnormalized logits array.
+        temp: Base temperature (T > 0).
+        n_conflicts: Count of conflicting intent markers or candidate options.
+        clip_range: Interval (min_logit, max_logit) for clamping.
+
+    Returns:
+        tuple[np.ndarray, float]: (clamped_logits, effective_temperature)
+    """
+    arr = np.asarray(logits, dtype=float)
+    clamped = np.clip(arr, clip_range[0], clip_range[1])
+    n_conf = max(0, int(n_conflicts))
+    t_eff = float(temp * (1.0 + 0.25 * n_conf))
+    return clamped, t_eff
+
+
+def regularize_and_scale_logits(
+    logits: np.ndarray,
+    temp: float = 1.0,
+    n_conflicts: int = 0,
+    clip_range: tuple[float, float] = (-8.0, 8.0),
+) -> np.ndarray:
+    """
+    Apply logit regularization followed by temperature-scaled Softmax.
+    Zero-centers logits along the last axis to preserve shift invariance across
+    arbitrary constant offsets prior to clamping and scaling.
+
+    Args:
+        logits: Unnormalized logits array.
+        temp: Base temperature (default: 1.0).
+        n_conflicts: Count of conflicting candidate options.
+        clip_range: Bounds for logit clipping (default: (-8.0, 8.0)).
+
+    Returns:
+        np.ndarray: Calibrated probability distribution.
+    """
+    arr = np.asarray(logits, dtype=float)
+    centered = arr - np.mean(arr, axis=-1, keepdims=True)
+    clamped, t_eff = apply_logit_regularization(
+        centered, temp=temp, n_conflicts=n_conflicts, clip_range=clip_range
+    )
+    t_eff = max(t_eff, 1e-6)
+    scaled = clamped / t_eff
+    max_logit = np.max(scaled, axis=-1, keepdims=True)
+    exp_logits = np.exp(scaled - max_logit)
+    sum_exp = np.sum(exp_logits, axis=-1, keepdims=True)
+    probs = exp_logits / sum_exp
+    return probs
+

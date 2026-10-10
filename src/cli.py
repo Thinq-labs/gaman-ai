@@ -91,9 +91,16 @@ def handle_choice(args: argparse.Namespace, engine: GamanEngine) -> int:
             {opt: (confidence if opt == winner else (1.0 - confidence) / max(1, len(options) - 1)) for opt in options},
         )
 
+        dec_tier = result.get("tier", "HIGH")
+        margin = result.get("margin", 0.0)
+        entropy = result.get("entropy", 0.0)
+        escalate = result.get("escalate_to_system2", False)
+        esc_str = "True (Escalated to System 2)" if escalate else "False (System 1 Approved)"
+
         print(f"⚡ GAMAN CHOICE  •  Latency: {latency:.1f}ms  •  {tier}")
         print(f"┌─ Selection:   {winner}")
-        print(f"├─ Confidence:  {confidence:.1%} (calibrated)")
+        print(f"├─ Confidence:  {confidence:.1%} [{dec_tier}]  (Margin: {margin:.1%}, Entropy: {entropy:.2f})")
+        print(f"├─ Escalation:  {esc_str}")
         print("└─ Probabilities:")
 
         opt_list = list(options)

@@ -110,3 +110,46 @@
 - [x] Comprehensive TDD Verification:
   - [x] Created `tests/test_adversarial.py` covering prompt hijack, roleplay jailbreak, token injection bait, gibberish token, and out-of-distribution queries (5/5 passing).
   - [x] All 161 tests passing across entire test suite with 0 regressions. Clean Ruff lint checks.
+
+---
+
+## v0.2 - Pillar 5: Enterprise Calibration, Sub-50ms Batching & Pre-Tokenizer Hardening
+- [x] Sub-50ms ONNX Tensor Batching (`src/engine.py`):
+  - [x] Vectorized pair construction: construct all $K$ `(premise, hypothesis)` string pairs in memory before tokenization.
+  - [x] Single-pass parallel inference: execute exactly one `session.run` call per `choice` / `decide` invocation.
+  - [x] Vectorized NumPy Softmax with temperature scaling.
+  - [x] Scaled intra-op thread allocation (`min(os.cpu_count() or 4, 8)`) for optimized multi-core edge hardware.
+- [x] Pre-Tokenization Adversarial Normalizer (`src/serializer.py`):
+  - [x] `collapse_spaced_tokens`: collapse obfuscated characters separated by `-`, `_`, or spaces (e.g., `R-E-F-U-N-D`, `S P A M`, `V_I_P`).
+  - [x] `extract_zero_percentage_dampeners`: extract explicitly cancelled categories (`0% spam`, `no intention of asking for a refund`).
+  - [x] `extract_figurative_modifiers`: detect figurative qualifiers (`emotional refund`, `metaphorical override`) and inject clarifying semantic boundaries.
+- [x] Professional Calibration & Confidence Tiering (`src/calibration.py`):
+  - [x] `compute_decision_metadata`: calculate Shannon entropy $H(P)$, normalized margin $M = p_{(1)} - p_{(2)}$, confidence tier (`HIGH`, `MEDIUM`, `LOW`), and System 2 escalation flag (`escalate_to_system2`).
+  - [x] Added `GamanEngine.decide` alias supporting the enterprise decision contract.
+  - [x] Updated CLI tree layout (`src/cli.py`) with tier badge, margin, entropy, and System 1 approval / System 2 escalation tags.
+- [x] Verification & Documentation:
+  - [x] Created `tests/test_hardened_engine.py` verifying single-pass batching assertion, obfuscation collapse scoring, ambiguity escalation, and latency benchmarks (10/10 passing).
+  - [x] Updated `docs/api_contract.md` with enterprise calibration metadata fields.
+  - [x] Full regression test suite passing (171/171 tests passed in 37.25s). Clean Ruff checks (0 errors).
+
+---
+
+## v0.2 - Pillar 6: Salience Cleaning, Adversative Splitting & Logit Regularization
+- [x] Boilerplate & Salience Stripper (`src/serializer.py`):
+  - [x] `strip_conversational_boilerplate`: strips leading pleasantries/greetings (`Hello team`, `Hope you are well`, `To whom it may concern`) and trailing boilerplate/signoffs (`Let me know when you fix...`, `Thanks in advance`, `fix tracking link`).
+  - [x] Preserves domain verbs and core evidence clauses.
+  - [x] Preserves sentence-terminal punctuation (`.`) while cleanly peeling extraneous ellipsis and trailing conversational padding.
+- [x] Adversative & Counterfactual Clause Re-Weighting (`src/serializer.py`):
+  - [x] `reweight_adversative_clauses`: detects adversative conjunctions (`instead`, `however`, `rather than`, `in reality`, `actually`) and counterfactual `If [condition], [adversative] [resolution]` structures.
+  - [x] Isolates authentic adversative resolution clauses and prepends them to the front of context to guide positional attention heads.
+- [x] Logit Clipping & Anti-Saturation Temperature (`src/calibration.py`):
+  - [x] `apply_logit_regularization`: clamps unnormalized logits to `[-8.0, 8.0]` and dynamically scales temperature $T_{\text{eff}} = T \cdot (1.0 + 0.25 \cdot N_{\text{conflicts}})$.
+  - [x] `regularize_and_scale_logits`: zero-centers logits along the decision axis to preserve mathematical shift invariance, clamps bounds, and computes calibrated Softmax probabilities.
+- [x] Engine & Input Pipeline Integration (`src/engine.py`):
+  - [x] Integrated `sanitize_adversarial_input` into `choice()`, automating spaced token collapse, boilerplate stripping, adversative clause reweighting, and modifier dampening.
+  - [x] Unified natural language hypothesis framing across text payloads: `"The authentic primary intent of the message is {cleaned_body}."`.
+  - [x] Counted verbatim candidate conflicts for anti-saturation temperature scaling and applied `regularize_and_scale_logits`.
+- [x] Verification & Documentation:
+  - [x] Created `tests/test_salience_hardening.py` with 11 unit and integration tests (Sandwich Trap, Counterfactual test, logit clamping bounds, conflict temperature scaling, saturation prevention).
+  - [x] 100% pass rate across entire regression test suite (182/182 tests passing in 37.39s).
+  - [x] Clean Ruff checks (0 lint errors).

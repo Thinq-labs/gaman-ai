@@ -20,7 +20,208 @@ Determinism guarantees:
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+# ─── Pre-Tokenization Adversarial Normalizer ─────────────────────────────────
+
+def collapse_spaced_tokens(text: str) -> str:
+    """
+    Collapse sequences of single characters separated by '-', '_', or spaces
+    designed to break subword tokenization (e.g., 'R-E-F-U-N-D' -> 'REFUND',
+    'S P A M' -> 'SPAM', 'V_I_P' -> 'VIP').
+
+    Preserves standard hyphenated words like 'a-b testing'.
+    """
+    # 1. Delimiter-separated single characters (dash, underscore): e.g. R-E-F-U-N-D, V_I_P
+    def _repl_delim(m: re.Match[str]) -> str:
+        raw = m.group(1)
+        parts = re.split(r"[\-_]", raw)
+        if (
+            len(parts) >= 2
+            and all(len(p) == 1 for p in parts)
+            and (len(parts) >= 3 or all(p.isupper() for p in parts))
+        ):
+            return "".join(parts)
+        return raw
+
+    text = re.sub(r"\b([A-Za-z](?:[\-_][A-Za-z])+)\b", _repl_delim, text)
+
+    # 2. Space-separated single characters: e.g. S P A M, V I P
+    def _repl_spaces(m: re.Match[str]) -> str:
+        raw = m.group(1)
+        parts = raw.split()
+        if (
+            len(parts) >= 2
+            and all(len(p) == 1 for p in parts)
+            and (len(parts) >= 3 or all(p.isupper() for p in parts))
+        ):
+            return "".join(parts)
+        return raw
+
+    text = re.sub(r"(?<=\b)([A-Za-z](?: [A-Za-z])+)(?=\b)", _repl_spaces, text)
+    return text
+
+
+def extract_zero_percentage_dampeners(text: str) -> list[str]:
+    """
+    Extract category labels explicitly cancelled or assigned zero weight in the text
+    (e.g., '0% spam', '0 % refund', 'no intention of asking for a refund').
+    """
+    targets: list[str] = []
+    # 0% <word>
+    for m in re.finditer(r"\b0\s*%\s*([A-Za-z_]+)", text, re.IGNORECASE):
+        targets.append(m.group(1).lower())
+    # zero <word>
+    for m in re.finditer(r"\bzero\s+([A-Za-z_]+)", text, re.IGNORECASE):
+        targets.append(m.group(1).lower())
+    # no intention of [asking for|requesting] a <word>
+    for m in re.finditer(
+        r"\bno\s+intention\s+of\s+(?:[\w\s]+\s+)?([A-Za-z_]+)", text, re.IGNORECASE
+    ):
+        targets.append(m.group(1).lower())
+    return targets
+
+
+def extract_figurative_modifiers(text: str) -> list[tuple[str, str]]:
+    """
+    Detect figurative qualifiers preceding contractual or intent tokens
+    (e.g., 'emotional refund', 'metaphorical override', 'figurative spam').
+    """
+    pattern = r"\b(emotional|metaphorical|figurative|symbolic|allegorical|philosophical)\s+([A-Za-z_]+)"
+    return [
+        (m.group(1).lower(), m.group(2).lower())
+        for m in re.finditer(pattern, text, re.IGNORECASE)
+    ]
+
+
+def strip_conversational_boilerplate(text: str) -> str:
+    """
+    Strip leading pleasantries, greetings, and trailing boilerplate/signoffs
+    to prevent transformer attention from smearing across conversational padding.
+    Retains core clauses containing domain verbs and operational evidence.
+    """
+    prefix_match = re.match(r"^([a-zA-Z_]+:\s+)", text)
+    prefix = prefix_match.group(1) if prefix_match else ""
+    body = text[len(prefix) :] if prefix else text
+
+    leading_patterns = [
+        r"^\s*(hello|hi|hey)(\s+(team|there|all|support|everyone))?(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+        r"^\s*(good\s+(morning|afternoon|evening|day))(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+        r"^\s*to\s+whom\s+it\s+may\s+concern(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+        r"^\s*dear\s+(team|support|customer\s+service|sir|madam|all|sir\/madam)(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+        r"^\s*hope\s+(you\s+are|this\s+finds\s+you)\s+well(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+        r"^\s*hope\s+you(\x27re|\x20are)\s+doing\s+well(\s*\.{2,}|\s*[,.!;:–-])*\s*",
+    ]
+
+    trailing_patterns = [
+        r"(?:[,\s;–-]|\.{2,})*(thanks\s+in\s+advance|thank\s+you(\s+so\s+much|\s+very\s+much)?|thanks|best\s+regards|warm\s+regards|regards|sincerely|cheers|yours\s+truly)\s*[.!]?\s*$",
+        r"(?:[,\s;–-]|\.{2,})*(let\s+me\s+know\s+(when|if|how)\s+.*)$",
+        r"(?:[,\s;–-]|\.{2,})*(please\s+(advise|help|update|let\s+me\s+know).*)$",
+        r"(?:[,\s;–-]|\.{2,})*(fix\s+tracking\s+link.*)$",
+    ]
+
+    cleaned = body.strip()
+    changed = True
+    while changed:
+        changed = False
+        for p in leading_patterns:
+            m = re.match(p, cleaned, re.IGNORECASE)
+            if m:
+                sub = cleaned[m.end() :].strip()
+                if sub:
+                    cleaned = sub
+                    changed = True
+
+    changed = True
+    while changed:
+        changed = False
+        for p in trailing_patterns:
+            m = re.search(p, cleaned, re.IGNORECASE)
+            if m:
+                sub = cleaned[: m.start()].strip()
+                if sub:
+                    cleaned = sub
+                    changed = True
+
+    return f"{prefix}{cleaned}"
+
+
+def reweight_adversative_clauses(text: str) -> str:
+    """
+    Detect adversative conjunctions ('instead', 'however', 'rather than',
+    'in reality', 'actually') and counterfactual patterns.
+    Isolates the adversative resolution clause and prepends it to the front
+    of the context so positional attention heads prioritize the authentic intent.
+    """
+    adv_pattern = r"\b(instead|however|rather\s+than|in\s+reality|actually)\b"
+    prefix_match = re.match(r"^([a-zA-Z_]+:\s+)", text)
+    prefix = prefix_match.group(1) if prefix_match else ""
+    body = text[len(prefix) :] if prefix else text
+
+    if not re.search(adv_pattern, body, re.IGNORECASE):
+        return text
+
+    norm = re.sub(r"\.{2,}", ", ", body).strip()
+
+    # Pattern 1: If [condition] [,;.]* (adversative) [resolution]
+    m_if = re.search(
+        r"\bif\b\s+([^,;]+?)\s*[,;.]*\s*" + adv_pattern + r"\s+([^,;.!?]+)",
+        norm,
+        re.IGNORECASE,
+    )
+    if m_if:
+        cond = m_if.group(1).strip()
+        adv = m_if.group(2).lower()
+        res = m_if.group(3).strip()
+        rest = re.sub(
+            r"\bif\b\s+([^,;]+?)\s*[,;.]*\s*" + adv_pattern + r"\s+([^,;.!?]+)",
+            f"If {cond}, {adv} {res}",
+            norm,
+            flags=re.IGNORECASE,
+        )
+        return f"{prefix}{res}. {rest}"
+
+    # Pattern 2: [clause A] [,;.]* (adversative) [clause B]
+    m_adv = re.search(
+        r"([^,;.!?]+?)\s*[,;.]*\s*" + adv_pattern + r"\s+([^,;.!?]+)",
+        norm,
+        re.IGNORECASE,
+    )
+    if m_adv:
+        clause_a = m_adv.group(1).strip()
+        adv = m_adv.group(2).lower()
+        clause_b = m_adv.group(3).strip()
+        if len(clause_b.split()) >= 2:
+            rest = re.sub(
+                r"([^,;.!?]+?)\s*[,;.]*\s*" + adv_pattern + r"\s+([^,;.!?]+)",
+                f"{clause_a}, {adv} {clause_b}",
+                norm,
+                flags=re.IGNORECASE,
+            )
+            return f"{prefix}{clause_b}. {rest}"
+
+    return text
+
+
+def sanitize_adversarial_input(
+    text: str,
+) -> tuple[str, list[str], list[tuple[str, str]]]:
+    """
+    Sanitize text input:
+    1. Collapses spaced/delimeter tokens.
+    2. Strips conversational boilerplate.
+    3. Reweights adversative and counterfactual clauses.
+    4. Extracts zero-percentage/cancelled dampeners.
+    5. Extracts figurative modifiers.
+    """
+    collapsed = collapse_spaced_tokens(text)
+    stripped = strip_conversational_boilerplate(collapsed)
+    reweighted = reweight_adversative_clauses(stripped)
+    dampeners = extract_zero_percentage_dampeners(reweighted)
+    figuratives = extract_figurative_modifiers(reweighted)
+    return reweighted, dampeners, figuratives
+
 
 # ─── Primitive value serializer ──────────────────────────────────────────────
 
