@@ -7,7 +7,7 @@ name = "gaman-ai"
 version = "0.2.0"
 description = "Local-first System One decision engine — sub-20ms edge inference via quantized bidirectional encoders."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
     "onnxruntime>=1.17.0",
