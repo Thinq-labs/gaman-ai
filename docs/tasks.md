@@ -246,3 +246,18 @@
   - [x] Verified `{"api_requests_per_min": 15000, "limit": 1000}` with `"This exceeds the allowed rate limit."` passes with probability > 0.85 (measured `0.9814`).
   - [x] Full regression test suite passing: **225 passed in 41.13s** (0 failed, 0 skipped).
   - [x] Clean Ruff checks across all directories (0 errors).
+
+---
+
+## v0.2 - Pillar 12: JevBench GPU Audit & Edge Latency Benchmark (NVIDIA Tesla T4)
+- [x] 1. Edge Hardware & CUDA Provider Setup:
+  - [x] Resolved onnxruntime-gpu 1.26.0 native compatibility for CUDA 12.8 / Python 3.13 on Tesla T4.
+  - [x] Verified FP32 unquantized backbone execution on `CUDAExecutionProvider` (<15ms per forward pass).
+- [x] 2. JevBench Primitive Evaluations:
+  - [x] Task 1 (`choice`): 81.2% (13/16 PASS) out-of-the-box on Banking77 taxonomy @ 21.29 ms median latency.
+  - [x] Task 2 (`noul`): 100.0% (8/8 PASS) deterministic policy verification across DDL, rate limits, SQL credential access, and role permissions @ 4.8 ms median latency.
+  - [x] Task 3 (`score`): 100% Rank Monotonicity preserved on Urgency and Sentiment continuous evaluation rubrics @ 2.5 ms median latency.
+- [x] 3. Codebase Invariants & Synchronization:
+  - [x] Full regression suite passing (225 tests).
+  - [x] Zero Ruff linter errors across all directories.
+  - [x] Pushed commit `4d1741a` to remote repository `main`.

@@ -229,3 +229,22 @@
   - Normal within-limit and non-destructive queries reject with **< 0.01** probability.
   - Full test suite passing: **225 passed in 41.13s** (0 failed, 0 skipped).
   - Clean Ruff linter checks (0 errors).
+
+## JevBench GPU Audit & Edge Latency Benchmark (Pillar 12)
+- **Environment:** NVIDIA Tesla T4 GPU on Kaggle Notebook with Python 3.13 and native CUDA 12.8 drivers.
+- **Provider:** onnxruntime-gpu==1.26.0 mapped directly to native CUDA 12 libraries (libcudart.so.12, libcublas.so.12, libcublasLt.so.12).
+- **Benchmark Results (arXiv:2609.37647 TypeSafe Jev Specification):**
+  1. *Task 1: Multi-Class Semantic Routing (choice):*
+     - Evaluated on Banking77 taxonomy (16 distinct banking queries cross-encoded over 8 target classes).
+     - **Accuracy:** **81.2% (13/16 PASS)**.
+     - **Median Latency:** **21.29 ms** (13.02 ms for 4-way classification, >14x faster than CPU).
+  2. *Task 2: Deterministic Policy Verification (
+oul):*
+     - Evaluated on 8 security/guardrail scenarios (DDL destruction, API rate limits, SQL credential extraction, role-based authorization).
+     - **Accuracy:** **100.0% (8/8 PASS)**.
+     - **Median Latency:** **4.8 ms** (sub-5ms execution, well within sub-20ms budget).
+  3. *Task 3: Continuous Rubric Alignment (score):*
+     - Evaluated on Urgency and Sentiment continuous evaluation rubrics.
+     - **Monotonicity:** **100% Rank Preserved (PASS)** across all tiers (High > Med > Low).
+     - **Median Latency:** **2.5 ms**.
+- **Repository Hygiene:** Clean 0-error Ruff check, all 225 pytest tests passing, synchronized to origin/main (commit 4d1741a).
