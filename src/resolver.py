@@ -202,10 +202,20 @@ def detect_hardware() -> HardwareProfile:
     )
 
 
-def _best_provider(available_providers: list[str]) -> str:
-    """Select the highest priority execution provider available."""
+def _best_provider(available_providers: list[str], vram_bytes: int | None = None) -> str:
+    """Select the highest priority execution provider available.
+
+    For DirectML / DmlExecutionProvider, only select as primary accelerator if dedicated
+    VRAM is at least 4 GB (i.e. discrete GPU). Integrated APUs (VRAM < 4GB) yield to
+    CPUExecutionProvider for sub-20ms AVX/SIMD INT8 performance and stability.
+    """
     for p in PROVIDER_PRIORITY:
         if p in available_providers:
+            if (
+                p in ("DmlExecutionProvider", "DirectMLExecutionProvider")
+                and (vram_bytes is not None and vram_bytes < 4 * 1024**3)
+            ):
+                continue
             return p
     return "CPUExecutionProvider"
 
@@ -240,7 +250,7 @@ def resolve_slab(
     if profile is None:
         profile = detect_hardware()
 
-    best_provider = _best_provider(profile.providers)
+    best_provider = _best_provider(profile.providers, vram_bytes=profile.vram_bytes)
 
     if requested_slab in ("small", "base", "large"):
         tier = requested_slab

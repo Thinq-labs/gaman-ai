@@ -461,6 +461,17 @@ def apply_logit_prior_matrix(
             if any(w in opt.lower() or w in descs[i].lower() for w in ["payment", "invoice", "pay"]):
                 penalized[i] += 4.0
 
+    declined_pat = r"\b(?:credit\s+card|card|payment|charge|transaction)\s+(?:was\s+)?(?:declined|failed|rejected)\b|\b(?:declined|failed|rejected)\s+(?:credit\s+card|card|payment)\b"
+    if re.search(declined_pat, txt):
+        for i, opt in enumerate(options):
+            comb = opt.lower() + " " + descs[i].lower()
+            if any(w in comb for w in ["payment_failure", "payment failure"]):
+                penalized[i] += 4.0
+            elif "payment" in comb and "inquiry" not in comb:
+                penalized[i] += 3.0
+            elif any(g in comb for g in ["general_inquiry", "general inquiry", "inquiry"]):
+                penalized[i] -= 3.0
+
     # 4. Multi-Clause Disjoint Intent Gate & Conjunctions
     if detect_multi_clause_disjoint_intent(state_text, options):
         dual_intent_flag = True

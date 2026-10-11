@@ -216,7 +216,9 @@ class GamanEngine:
         num_cpus = os.cpu_count() or 2
         opts.intra_op_num_threads = min(6, max(2, (num_cpus * 3) // 4))
         opts.inter_op_num_threads = 1
-        opts.enable_mem_pattern = True
+        opts.log_severity_level = 3  # Suppress internal C++ graph partitioner warnings (Memcpy notices)
+        is_dml = any("Dml" in p or "DirectML" in p for p in selected_providers[:1])
+        opts.enable_mem_pattern = not is_dml
 
         session = ort.InferenceSession(
             str(self.model_path),

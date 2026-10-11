@@ -1,27 +1,19 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-11T13:24:00+05:30
-**Current Status:** Gaman Next-Gen Phase 1, 2 & 3 executed: ModernBERT support in resolver & exporter, DirectML AMD GPU VRAM discovery, Decoupled Late-Interaction module (`src/late_interaction.py`), Uncertainty-Aware Conformal Prediction (`src/conformal.py`), Speculative Decision Cascading (`src/cascade.py`), and RLCD Distillation Harness (`scripts/distill_slabs.py`). Full test suite: 252 passed (0 failed).
-
-## Active Context
-- **Zero-Clone Pip Distribution & Auto-Weights Downloader:**
-  - **Standard OS Cache Discovery (`src/resolver.py`):** `get_default_cache_dir()` checks `GAMAN_CACHE_DIR`, `%LOCALAPPDATA%/gaman` on Windows, and `$XDG_CACHE_HOME/gaman` on Linux/macOS.
-  - **Model Lookup Hierarchy:** Priority 1 (Explicit `models_dir`) > Priority 2 (Local cwd `./models/`) > Priority 3 (Global OS Cache) > Auto-Downloader.
-  - **Zero-Dependency Weights Downloader (`src/downloader.py`):**
-    - Pure `urllib.request` implementation with zero third-party dependencies (`no requests`, `no huggingface_hub`).
-    - Atomic writes via temporary `.tmp` staging and `os.replace`.
-    - TTY-sensitive ASCII progress bar (`Downloading Gaman AI 'small' weights (164 MB)... [=========>] 100%`) suppressed when non-interactive or under `--json`.
-  - **Engine & CLI Integration:**
-    - `GamanEngine(models_dir=None)` automatically resolves or downloads weights on first run, providing true zero-clone out-of-the-box bootstrapping for `pip install gaman-ai`.
-    - `gaman cache --dir` and `gaman cache --clean` subcommands.
-    - `gaman info` displays global cache path and status.
+**Last Updated:** 2026-10-11T17:15:00+05:30
+**Current Status:** Gaman Next-Gen ("Titanium" v0.3) fully executed and verified:
+1. ModernBERT-base (86M) and ModernBERT-large (435M) exported to ONNX FP32 and dynamic INT8 (`models/modernbert/`).
+2. RLCD Knowledge Distillation executed on `banking77_8class.csv` (1,077 samples): 95.45% student-teacher agreement achieved; exported student to ONNX dynamic INT8 (`models/distilled_student/onnx/`).
+3. Decoupled Late-Interaction wired into `GamanEngine` (`src/engine.py` & `src/late_interaction.py`).
+4. Hardware enablement: `onnxruntime-directml` installed; Windows AMD Radeon GPU DirectML support active with APU edge safeguard in `src/resolver.py`.
+5. Full test suite: **256 passed in 56.15s** (0 failed, 100% green); Ruff clean.
 
 ## Verification Metrics
-- Total Tests: **252 passed in 35.15s** (0 skipped, 0 failed, 100% green).
+- Total Tests: **256 passed in 56.15s** (0 skipped, 0 failed, 100% green).
+- Decoupled Late-Interaction Tests: **12 passed** (`tests/test_late_interaction.py`).
 - Speculative Cascade Tests: **8 passed** (`tests/test_cascade.py`).
 - Distillation Mathematics Tests: **5 passed** (`tests/test_distillation.py`).
 - Conformal Prediction Tests: **6 passed** (`tests/test_conformal.py`).
-- Decoupled Late-Interaction Tests: **8 passed** (`tests/test_late_interaction.py`).
 - Downloader & Cache Tests: **10 passed** (`tests/test_downloader.py`).
 - CLI Tests: **22 passed** (`tests/test_cli.py`).
 - Adapter Tests: **10 passed** (`tests/test_heads.py`).

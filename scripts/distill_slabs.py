@@ -227,17 +227,13 @@ def main() -> None:
 
     print(f"  Loaded {len(texts)} samples from {dataset_path.name}")
 
-    print(f"[3/4] Distilling across {args.epochs} epochs (batch_size={args.batch_size})...")
-    optimizer = torch.optim.AdamW(student.parameters(), lr=3e-5)
-    loss_ce = torch.nn.CrossEntropyLoss()
-    loss_kl = torch.nn.KLDivLoss(reduction="batchmean")
+    import gc
 
-    student.train()
-    total_steps = (len(texts) + args.batch_size - 1) // args.batch_size
-    last_loss = 0.0
+    print(f"[3/5] Precomputing Teacher soft-targets across {len(texts)} samples...")
+    teacher_logits_list: list[torch.Tensor] = []
+    teacher_preds_list: list[int] = []
 
-    for epoch in range(args.epochs):
-        epoch_loss = 0.0
+    with torch.no_grad():
         for i in range(0, len(texts), args.batch_size):
             batch_texts = texts[i : i + args.batch_size]
             inputs = tokenizer(
@@ -247,10 +243,38 @@ def main() -> None:
                 max_length=128,
                 return_tensors="pt",
             ).to(device)
+            t_logits = teacher(**inputs).logits
+            teacher_logits_list.append(t_logits.cpu())
+            teacher_preds_list.extend(torch.argmax(t_logits, dim=-1).cpu().tolist())
 
-            with torch.no_grad():
-                t_logits = teacher(**inputs).logits
+    print("  Precomputed teacher targets. Freeing teacher memory...")
+    del teacher
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
+    print(f"[4/5] Distilling Student across {args.epochs} epochs (batch_size={args.batch_size})...")
+    optimizer = torch.optim.AdamW(student.parameters(), lr=3e-5)
+    loss_ce = torch.nn.CrossEntropyLoss()
+    loss_kl = torch.nn.KLDivLoss(reduction="batchmean")
+
+    student.train()
+    total_steps = len(teacher_logits_list)
+    last_loss = 0.0
+
+    for epoch in range(args.epochs):
+        epoch_loss = 0.0
+        for batch_idx, i in enumerate(range(0, len(texts), args.batch_size)):
+            batch_texts = texts[i : i + args.batch_size]
+            t_logits = teacher_logits_list[batch_idx].to(device)
+
+            inputs = tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt",
+            ).to(device)
             s_logits = student(**inputs).logits
 
             # Soft targets: KL divergence scaled by T^2
@@ -274,11 +298,10 @@ def main() -> None:
         last_loss = avg_epoch_loss
         print(f"  Epoch {epoch + 1}/{args.epochs} - Loss: {avg_epoch_loss:.4f}")
 
-    # [4/4] Compute alignment metrics across dataset
-    print("\n[4/4] Evaluating Student-Teacher Agreement...")
+    # [5/5] Compute alignment metrics across dataset
+    print("\n[5/5] Evaluating Student-Teacher Agreement...")
     student.eval()
     all_s_preds: list[int] = []
-    all_t_preds: list[int] = []
 
     with torch.no_grad():
         for i in range(0, len(texts), args.batch_size):
@@ -290,13 +313,10 @@ def main() -> None:
                 max_length=128,
                 return_tensors="pt",
             ).to(device)
-            t_logits = teacher(**inputs).logits
             s_logits = student(**inputs).logits
-
-            all_t_preds.extend(torch.argmax(t_logits, dim=-1).cpu().tolist())
             all_s_preds.extend(torch.argmax(s_logits, dim=-1).cpu().tolist())
 
-    alignment_metrics = compute_alignment_metrics(all_s_preds, all_t_preds)
+    alignment_metrics = compute_alignment_metrics(all_s_preds, teacher_preds_list)
     print(f"  Agreement Rate : {alignment_metrics['agreement_rate'] * 100:.2f}%")
     print(f"  Total Samples  : {int(alignment_metrics['total_samples'])}")
 

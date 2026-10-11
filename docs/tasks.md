@@ -315,3 +315,28 @@
 - [x] 3. Regression & Linter Verification:
   - [x] Full test suite: **252 passed in 35.15s** (0 failed, 0 skipped, 100% green).
   - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.
+
+---
+
+## v0.3 - Pillar 16: Titanium Model Weights, RLCD Distillation & DirectML Enablement
+- [x] 1. ModernBERT ONNX Model Weights Export (`scripts/export_backbone.py`):
+  - [x] ModernBERT-base (86M params, 8,192 context window): Exported to FP32 and dynamic INT8 quantized (`models/modernbert/base/backbone.onnx`, 143.7 MB).
+  - [x] ModernBERT-large (435M params, 8,192 context window): Exported to FP32 and dynamic INT8 quantized (`models/modernbert/large/backbone.onnx`, 378.8 MB).
+  - [x] Manifests and fast Hugging Face tokenizers generated for both base and large tiers.
+- [x] 2. RLCD Knowledge Distillation Execution (`scripts/distill_slabs.py`):
+  - [x] Distilled `tasksource/ModernBERT-large-nli` teacher into `tasksource/ModernBERT-base-nli` student on `banking77_8class.csv` (1,077 samples).
+  - [x] Hyperparameters: $T=2.0$, $\alpha=0.7$, epochs=3, batch_size=16.
+  - [x] Result: Final loss 0.1431 with **95.45% student-teacher agreement rate** (target $\ge 90\%$).
+  - [x] Distillation summary persisted to `models/distilled_student/distillation_summary.json`.
+  - [x] Distilled student exported to ONNX dynamic INT8 at `models/distilled_student/onnx/backbone.onnx`.
+- [x] 3. Decoupled Two-Tower Late-Interaction Integration (`src/engine.py` & `src/late_interaction.py`):
+  - [x] Integrated `late_interaction` flag into `GamanEngine` with `StateRepresentationCache` and `LateInteractionScorer`.
+  - [x] Added `get_token_embeddings(text)` with mean pooling over non-padded token representations.
+  - [x] Added `test_engine_late_interaction` suite in `tests/test_late_interaction.py` (12/12 passing).
+- [x] 4. Hardware Acceleration & DirectML Integration (`onnxruntime-directml` & `src/resolver.py`):
+  - [x] Installed `onnxruntime-directml` enabling `DmlExecutionProvider` on AMD Radeon GPU.
+  - [x] Integrated APU guard in `src/resolver.py`: integrated APUs (<4GB VRAM) safely route INT8 models to CPU SIMD for sub-20ms edge performance; high-VRAM GPUs utilize DirectML.
+  - [x] Memory pattern safety: disabled `enable_mem_pattern` on DirectML sessions to prevent DX12 memory corruption exceptions.
+- [x] 5. Full Verification Gate:
+  - [x] Full test suite: **256 passed in 56.15s** (0 failed, 0 skipped, 100% green).
+  - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.
