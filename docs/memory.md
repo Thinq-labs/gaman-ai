@@ -1,7 +1,7 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-10T01:04:00+05:30
-**Current Status:** Gaman AI v0.2 GitHub Actions CI Matrix Fixed across all 9 OS/Python targets (Ubuntu, Windows, macOS). Commit 5dcb2c1.
+**Last Updated:** 2026-10-11T13:24:00+05:30
+**Current Status:** Gaman Next-Gen Phase 1, 2 & 3 executed: ModernBERT support in resolver & exporter, DirectML AMD GPU VRAM discovery, Decoupled Late-Interaction module (`src/late_interaction.py`), Uncertainty-Aware Conformal Prediction (`src/conformal.py`), Speculative Decision Cascading (`src/cascade.py`), and RLCD Distillation Harness (`scripts/distill_slabs.py`). Full test suite: 252 passed (0 failed).
 
 ## Active Context
 - **Zero-Clone Pip Distribution & Auto-Weights Downloader:**
@@ -17,7 +17,11 @@
     - `gaman info` displays global cache path and status.
 
 ## Verification Metrics
-- Total Tests: **156 passed in 20.62s** (0 skipped, 0 failed).
+- Total Tests: **252 passed in 35.15s** (0 skipped, 0 failed, 100% green).
+- Speculative Cascade Tests: **8 passed** (`tests/test_cascade.py`).
+- Distillation Mathematics Tests: **5 passed** (`tests/test_distillation.py`).
+- Conformal Prediction Tests: **6 passed** (`tests/test_conformal.py`).
+- Decoupled Late-Interaction Tests: **8 passed** (`tests/test_late_interaction.py`).
 - Downloader & Cache Tests: **10 passed** (`tests/test_downloader.py`).
 - CLI Tests: **22 passed** (`tests/test_cli.py`).
 - Adapter Tests: **10 passed** (`tests/test_heads.py`).

@@ -261,3 +261,57 @@
   - [x] Full regression suite passing (225 tests).
   - [x] Zero Ruff linter errors across all directories.
   - [x] Pushed commit `4d1741a` to remote repository `main`.
+
+---
+
+## v0.2 - Pillar 13: Open Source Contributor Magnet & Documentation Overhaul
+- [x] 1. Community & Architectural Research:
+  - [x] Evaluated top-tier open source AI & systems repositories (vLLM, llama.cpp, Ruff, FastHTML, Polars) and open source contributor onboarding literature.
+  - [x] Extracted the 5 core contributor attraction patterns: 10-second System 1 hook, 60-second time-to-first-run, interactive Mermaid dataflow, empirical benchmark transparency, and prioritized roadmap frontiers.
+- [x] 2. README Overhaul (`README.md`):
+  - [x] Integrated System 1 vs System 2 cognitive theory framing ("The Reflex Layer for Autonomous Systems").
+  - [x] Added clean interactive Mermaid architecture diagram showing dataflow from JSON to Rust tokenizer, ONNX INT8 graph, and calibrated primitives.
+  - [x] Documented empirical benchmark comparison (Gaman AI vs Cloud LLMs vs 7B SLMs) with local replication command.
+  - [x] Added 60-second quickstarts for both Python SDK and binary CLI (`gaman`).
+  - [x] Added structured codebase tour and 6 high-impact contributor frontiers (Wasm edge, Rust/C++ SDKs, Apple Metal, Agent framework plugins).
+- [x] 3. Contributor Guidelines (`CONTRIBUTING.md`):
+  - [x] Created `CONTRIBUTING.md` documenting the Karpathy Standard, 3-command local gate (`pytest`, `mypy`, `ruff`), virtual environment setup, and Pull Request conventions.
+- [x] 4. Verification:
+  - [x] Verified full test suite: 225/225 passed in 37.55s.
+  - [x] Clean Ruff linting check across `src/` (0 errors).
+
+---
+
+## v0.3 - Pillar 14: Gaman Next-Gen Foundation (ModernBERT, Conformal Sets, Late-Interaction)
+- [x] 1. ModernBERT & DirectML Topology:
+  - [x] Implemented `--family [deberta|modernbert]` flag in `scripts/export_backbone.py` with ModernBERT NLI checkpoint mappings.
+  - [x] Updated `src/resolver.py`: added ModernBERT slab mappings, `family` configuration, and Windows PowerShell DirectML VRAM discovery for AMD Radeon / Intel Arc.
+- [x] 2. Uncertainty-Aware Conformal Prediction:
+  - [x] Created `src/conformal.py`: Split Conformal Prediction module guaranteeing $P(Y \in C(X)) \ge 1 - \alpha$.
+  - [x] Integrated conformal prediction sets into `GamanEngine.choice()`: returns `prediction_set`, `certified_safe`, `coverage_guarantee`.
+  - [x] Auto-escalation flag `escalate_to_system2 = True` when ambiguous ($|C(X)| > 1$) or Out-of-Distribution ($|C(X)| = 0$).
+  - [x] Added unit tests in `tests/test_conformal.py` (6/6 passed).
+- [x] 3. Decoupled Late-Interaction Architecture:
+  - [x] Created `src/late_interaction.py`: ColBERT-style MaxSim alignment operator and thread-safe LRU state representation cache.
+  - [x] Vectorized $O(K)$ option scaling bypassing quadratic in-sequence token explosion and positional bias.
+  - [x] Added unit tests in `tests/test_late_interaction.py` (8/8 passed).
+- [x] 4. Regression & Linter Verification:
+  - [x] Full test suite: **239 passed in 34.48s** (0 failed, 0 skipped).
+  - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.
+
+---
+
+## v0.3 - Pillar 15: Speculative Decision Cascading & RLCD Distillation Harness
+- [x] 1. Speculative Decision Cascading (`src/cascade.py`):
+  - [x] Implemented `SpeculativeCascadeEngine`: Two-tier draft/verifier cascading architecture.
+  - [x] Fast draft evaluation (ModernBERT-small 44M) checks conformal prediction set $|C(X)| == 1$ and non-escalation.
+  - [x] Speculative hit returns immediately (<5ms latency); ambiguous sets ($|C(X)| > 1$) or OOD ($|C(X)| == 0$) trigger cascade forward to high-capacity verifier (ModernBERT-large 435M / base 86M).
+  - [x] Telemetry tracking: attaches `cascaded`, `speculative_hit`, `draft_tier`, `verifier_tier`, and `cascade_latency_ms`.
+  - [x] Added comprehensive unit test suite in `tests/test_cascade.py` (8/8 passed in 0.50s).
+- [x] 2. RLCD Knowledge Distillation Harness (`scripts/distill_slabs.py`):
+  - [x] Implemented temperature-scaled Kullback-Leibler (KL) divergence distillation loss: $L = (1 - \alpha) L_{\text{task}} + \alpha T^2 D_{\text{KL}}(P_{\text{student}} \parallel Q_{\text{teacher}})$.
+  - [x] Added alignment and fidelity metrics evaluator (`agreement_rate`, `student_acc`, `teacher_acc`).
+  - [x] Added unit tests in `tests/test_distillation.py` (5/5 passed in 0.25s).
+- [x] 3. Regression & Linter Verification:
+  - [x] Full test suite: **252 passed in 35.15s** (0 failed, 0 skipped, 100% green).
+  - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.

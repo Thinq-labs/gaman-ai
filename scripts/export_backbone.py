@@ -49,6 +49,11 @@ import sys
 import time
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # ─── Constants ──────────────────────────────────────────────────────────────
 DEFAULT_MODEL_ID = "cross-encoder/nli-deberta-v3-small"
 DEFAULT_OUTPUT_DIR = "models"
@@ -95,6 +100,13 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     parser.add_argument(
+        "--family",
+        type=str,
+        choices=["deberta", "modernbert"],
+        default="deberta",
+        help="Backbone model family ('deberta' or 'modernbert'). Default: 'deberta'",
+    )
+    parser.add_argument(
         "--tier",
         type=str,
         choices=["small", "base", "large"],
@@ -126,16 +138,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--opset",
         type=int,
-        default=17,
-        help="ONNX opset version for export. Default: 17",
+        default=18,
+        help="ONNX opset version for export. Default: 18",
     )
     args = parser.parse_args()
     if args.tier:
-        tier_cfg = TIER_CONFIGS[args.tier]
-        if args.model_id == DEFAULT_MODEL_ID:
-            args.model_id = tier_cfg["model_id"]
-        if args.output_dir == DEFAULT_OUTPUT_DIR:
-            args.output_dir = tier_cfg["output_dir"]
+        if args.family == "modernbert":
+            modernbert_tiers = {
+                "small": "tasksource/ModernBERT-base-nli",
+                "base": "tasksource/ModernBERT-base-nli",
+                "large": "tasksource/ModernBERT-large-nli",
+            }
+            if args.model_id == DEFAULT_MODEL_ID:
+                args.model_id = modernbert_tiers[args.tier]
+            if args.output_dir == DEFAULT_OUTPUT_DIR:
+                args.output_dir = f"models/modernbert/{args.tier}"
+        else:
+            tier_cfg = TIER_CONFIGS[args.tier]
+            if args.model_id == DEFAULT_MODEL_ID:
+                args.model_id = tier_cfg["model_id"]
+            if args.output_dir == DEFAULT_OUTPUT_DIR:
+                args.output_dir = tier_cfg["output_dir"]
     return args
 
 
@@ -153,63 +176,100 @@ def export_to_onnx(model_id: str, tmp_dir: Path, opset: int) -> Path:
     t0 = time.perf_counter()
 
     # Fast path: check if pre-exported ONNX graph is available on HF Hub
-    try:
-        from huggingface_hub import HfApi, hf_hub_download
-        api = HfApi()
-        files = api.list_repo_files(model_id)
-        onnx_candidates = ["onnx/model.onnx", "model.onnx"]
-        found_onnx = next((c for c in onnx_candidates if c in files), None)
-        if found_onnx:
-            print(f"  Downloading pre-exported ONNX artifact '{found_onnx}' for '{model_id}'...")
-            downloaded = hf_hub_download(model_id, found_onnx)
-            target = tmp_dir / "model.onnx"
-            shutil.copy2(downloaded, target)
+    if not Path(model_id).exists():
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+            api = HfApi()
+            files = api.list_repo_files(model_id)
+            onnx_candidates = ["onnx/model.onnx", "model.onnx"]
+            found_onnx = next((c for c in onnx_candidates if c in files), None)
+            if found_onnx:
+                print(f"  Downloading pre-exported ONNX artifact '{found_onnx}' for '{model_id}'...")
+                downloaded = hf_hub_download(model_id, found_onnx)
+                target = tmp_dir / "model.onnx"
+                shutil.copy2(downloaded, target)
 
-            # Download tokenizer and config artifacts
-            for fname in TOKENIZER_ARTIFACTS:
-                if fname in files:
-                    art = hf_hub_download(model_id, fname)
-                    shutil.copy2(art, tmp_dir / fname)
+                # Download tokenizer and config artifacts
+                for fname in TOKENIZER_ARTIFACTS:
+                    if fname in files:
+                        art = hf_hub_download(model_id, fname)
+                        shutil.copy2(art, tmp_dir / fname)
 
-            elapsed = time.perf_counter() - t0
-            print(f"  [OK] Direct ONNX download done ({elapsed:.1f}s)")
-            size_mb = target.stat().st_size / (1024 * 1024)
-            print(f"  [INFO] FP32 model size: {size_mb:.1f} MB")
-            return target
-    except Exception as exc:
-        print(f"  [INFO] Direct download check skipped ({exc}), falling back to optimum export...")
+                elapsed = time.perf_counter() - t0
+                print(f"  [OK] Direct ONNX download done ({elapsed:.1f}s)")
+                size_mb = target.stat().st_size / (1024 * 1024)
+                print(f"  [INFO] FP32 model size: {size_mb:.1f} MB")
+                return target
+        except Exception as exc:
+            print(f"  [INFO] Direct download check skipped ({exc}), falling back to optimum export...")
 
-    # Full export path via optimum
+    # Full export path
     _check_export_deps()
 
-    from optimum.onnxruntime import ORTModelForSequenceClassification  # type: ignore[import]
-    from transformers import AutoTokenizer  # type: ignore[import]
+    fp32_onnx = tmp_dir / "model.onnx"
+    try:
+        from optimum.onnxruntime import ORTModelForSequenceClassification  # type: ignore[import]
+        from transformers import AutoTokenizer  # type: ignore[import]
 
-    print(f"  Downloading and exporting '{model_id}' to ONNX via optimum (opset={opset})...")
+        print(f"  Downloading and exporting '{model_id}' to ONNX via optimum (opset={opset})...")
+        model = ORTModelForSequenceClassification.from_pretrained(
+            model_id,
+            export=True,
+            provider="CPUExecutionProvider",
+        )
+        model.save_pretrained(tmp_dir)
 
-    # Export model + bake NLI classification head into ONNX graph
-    model = ORTModelForSequenceClassification.from_pretrained(
-        model_id,
-        export=True,
-        provider="CPUExecutionProvider",
-    )
-    model.save_pretrained(tmp_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer.save_pretrained(tmp_dir)
+    except Exception as exc:
+        print(f"  [INFO] Optimum export path bypassed ({exc}), using torch.onnx.export...")
+        import torch  # type: ignore[import]
+        from transformers import (  # type: ignore[import]
+            AutoModelForSequenceClassification,
+            AutoTokenizer,
+        )
 
-    # Save tokenizer alongside
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    tokenizer.save_pretrained(tmp_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer.save_pretrained(tmp_dir)
+
+        model = AutoModelForSequenceClassification.from_pretrained(model_id)
+        model.eval()
+        model.config.save_pretrained(tmp_dir)
+
+        dummy = tokenizer("Test premise text", "Test hypothesis text", return_tensors="pt")
+
+        input_names = ["input_ids", "attention_mask"]
+        inputs = (dummy["input_ids"], dummy["attention_mask"])
+        dynamic_axes = {
+            "input_ids": {0: "batch_size", 1: "sequence_length"},
+            "attention_mask": {0: "batch_size", 1: "sequence_length"},
+            "logits": {0: "batch_size"},
+        }
+        if "token_type_ids" in dummy:
+            input_names.append("token_type_ids")
+            inputs = (dummy["input_ids"], dummy["attention_mask"], dummy["token_type_ids"])
+            dynamic_axes["token_type_ids"] = {0: "batch_size", 1: "sequence_length"}
+
+        torch.onnx.export(
+            model,
+            inputs,
+            str(fp32_onnx),
+            input_names=input_names,
+            output_names=["logits"],
+            dynamic_axes=dynamic_axes,
+            opset_version=opset,
+            do_constant_folding=True,
+            dynamo=False,
+        )
 
     elapsed = time.perf_counter() - t0
     print(f"  [OK] ONNX export done ({elapsed:.1f}s)")
 
-    # optimum saves the ONNX as model.onnx; guard against version differences
-    fp32_onnx = tmp_dir / "model.onnx"
     if not fp32_onnx.exists():
         candidates = sorted(tmp_dir.glob("*.onnx"))
         if not candidates:
             raise FileNotFoundError(
-                f"optimum export produced no .onnx file in {tmp_dir}. "
-                "Check optimum version compatibility."
+                f"Export produced no .onnx file in {tmp_dir}."
             )
         fp32_onnx = candidates[0]
         print(f"  [INFO] Found ONNX at non-standard path: {fp32_onnx.name}")
@@ -300,7 +360,7 @@ def write_manifest(
 def _check_export_deps() -> None:
     """Fail fast with an actionable error if export deps are missing."""
     missing = []
-    for pkg in ("optimum", "transformers", "torch"):
+    for pkg in ("transformers", "torch"):
         try:
             __import__(pkg)
         except ImportError:
@@ -309,7 +369,7 @@ def _check_export_deps() -> None:
         _die(
             f"Missing export dependencies: {', '.join(missing)}\n"
             "  Install them with:\n"
-            "    pip install -r requirements-dev.txt"
+            "    pip install torch transformers"
         )
 
 

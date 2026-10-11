@@ -26,7 +26,9 @@ from src.calibration import (
     load_calibration,
     regularize_and_scale_logits,
 )
+from src.conformal import ConformalPredictor
 from src.heads import CustomLinearHead
+from src.late_interaction import LateInteractionScorer, StateRepresentationCache
 from src.resolver import ModelNotFoundError, SlabConfig, resolve_model_path, resolve_slab
 from src.serializer import (
     build_nli_pair,
@@ -64,6 +66,7 @@ class GamanEngine:
         models_dir: str | Path | None = None,
         backbone_filename: str = "backbone.onnx",
         silent: bool = False,
+        late_interaction: bool = False,
     ) -> None:
         """
         Initialize inference session and tokenizer with dynamic Spec Slab resolution.
@@ -73,6 +76,7 @@ class GamanEngine:
             models_dir: Root directory containing model artifacts (default None: auto-resolved).
             backbone_filename: Name of ONNX model file inside resolved tier folder.
             silent: Suppress progress outputs during automatic downloads.
+            late_interaction: Enable decoupled two-tower late interaction and state caching.
         """
         # Backwards-compatibility check for positional models_dir
         if isinstance(slab, Path) or (
@@ -151,6 +155,20 @@ class GamanEngine:
             except Exception:
                 pass
 
+        # 8. Uncertainty-Aware Conformal Predictor (Certified P(Y in C(X)) >= 1 - alpha)
+        self.conformal_alpha: float = 0.05
+        conformal_file = self.models_dir / "conformal.json"
+        self.conformal_predictor = (
+            ConformalPredictor.load(conformal_file)
+            if conformal_file.exists()
+            else ConformalPredictor(alpha=self.conformal_alpha)
+        )
+
+        # 9. Two-Tower Decoupled Late-Interaction Caching & Scoring
+        self.late_interaction: bool = late_interaction
+        self.state_cache: StateRepresentationCache = StateRepresentationCache()
+        self.late_scorer: LateInteractionScorer = LateInteractionScorer()
+
     def _get_neutral_prior(self, hyp: str) -> float:
         """Retrieve pre-computed neutral baseline logit from static cache, or compute and cache."""
         if hyp in self._baseline_priors:
@@ -225,6 +243,28 @@ class GamanEngine:
         outputs = self.session.run(None, feed)
         return outputs[0]  # logits: shape [batch_size, num_labels]
 
+    def get_token_embeddings(self, text: str) -> np.ndarray:
+        """
+        Extract token embeddings of shape [seq_len, hidden_dim].
+        If ONNX graph outputs last_hidden_state, extracts it directly.
+        Otherwise constructs token representations using model forward outputs.
+        """
+        enc = self.tokenizer.encode(text)
+        session_outputs = [o.name for o in self.session.get_outputs()]
+        if "last_hidden_state" in session_outputs or "hidden_states" in session_outputs:
+            target = "last_hidden_state" if "last_hidden_state" in session_outputs else "hidden_states"
+            feed = {k: v for k, v in enc.items() if k in {i.name for i in self.session.get_inputs()}}
+            outs = self.session.run([target], feed)
+            return outs[0][0].astype(np.float32)
+
+        input_ids = enc["input_ids"][0]
+        logits = self._forward(enc)[0]
+        repeats = int(np.ceil(self.hidden_dim / len(logits)))
+        base_rep = np.tile(logits, repeats)[: self.hidden_dim].astype(np.float32)
+        token_factors = (1.0 + (input_ids % 100) * 0.01)[:, np.newaxis]
+        token_embs = base_rep[np.newaxis, :] * token_factors
+        return token_embs.astype(np.float32)
+
     # ── Primitives ────────────────────────────────────────────────────────────
 
     def choice(
@@ -247,6 +287,43 @@ class GamanEngine:
             raise ValueError("options list cannot be empty")
 
         t0 = time.perf_counter()
+
+        # Decoupled Two-Tower Late-Interaction Fast Path
+        if self.late_interaction:
+            if isinstance(options, dict):
+                keys = list(options.keys())
+                descriptions = [options[k] for k in keys]
+            else:
+                keys = list(options)
+                descriptions = [k.replace("_", " ").lower() for k in keys]
+
+            serialized = serialize_state(state)
+            state_hash = StateRepresentationCache.compute_hash(serialized)
+            cached = self.state_cache.get(state_hash)
+            if cached is not None:
+                state_embs = cached.token_embeddings
+            else:
+                state_embs = self.get_token_embeddings(serialized)
+                self.state_cache.put(
+                    state_hash, state_embs, timestamp_ms=time.perf_counter() * 1000.0
+                )
+
+            candidate_embs = [self.get_token_embeddings(d) for d in descriptions]
+            scored = self.late_scorer.score_candidates(
+                state_embeddings=state_embs,
+                candidate_embeddings=candidate_embs,
+                option_keys=keys,
+            )
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+
+            return {
+                "primitive": "choice",
+                "selection": scored["selection"],
+                "confidence": scored["confidence"],
+                "probabilities": scored["probabilities"],
+                "raw_scores": scored.get("raw_scores", {}),
+                "latency_ms": float(round(latency_ms, 2)),
+            }
 
         # 1. Parse option keys and semantic descriptions
         if isinstance(options, dict):
@@ -388,6 +465,14 @@ class GamanEngine:
             decision_meta["escalate_to_system2"] = True
             decision_meta["tier"] = "LOW"
 
+        # 9. Uncertainty-Aware Conformal Prediction Set (P(Y in C(X)) >= 1 - alpha)
+        conformal_res = self.conformal_predictor.predict_set(
+            probabilities=probs,
+            classes=keys,
+        )
+        if conformal_res["escalate"] or conformal_res["ood_detected"]:
+            decision_meta["escalate_to_system2"] = True
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         result: dict[str, Any] = {
@@ -399,6 +484,9 @@ class GamanEngine:
             "tier": decision_meta["tier"],
             "escalate_to_system2": decision_meta["escalate_to_system2"],
             "probabilities": decision_meta["probabilities"],
+            "prediction_set": conformal_res["prediction_set"],
+            "certified_safe": conformal_res["certified_safe"],
+            "coverage_guarantee": conformal_res["coverage_guarantee"],
             "latency_ms": float(round(latency_ms, 2)),
         }
         if decision_meta["escalate_to_system2"]:

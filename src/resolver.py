@@ -35,16 +35,19 @@ PROVIDER_PRIORITY = [
 SLAB_DEFINITIONS: dict[str, dict[str, Any]] = {
     "small": {
         "model_id": "cross-encoder/nli-deberta-v3-small",
+        "modernbert_model_id": "tasksource/ModernBERT-base-nli",
         "quantization": "int8",
         "hidden_dim": 768,
     },
     "base": {
         "model_id": "cross-encoder/nli-deberta-v3-base",
+        "modernbert_model_id": "tasksource/ModernBERT-base-nli",
         "quantization": "int8",
         "hidden_dim": 768,
     },
     "large": {
         "model_id": "cross-encoder/nli-deberta-v3-large",
+        "modernbert_model_id": "tasksource/ModernBERT-large-nli",
         "quantization": "fp16",
         "hidden_dim": 1024,
     },
@@ -77,6 +80,7 @@ class SlabConfig:
     quantization: str  # 'int8', 'fp16', 'fp32'
     provider: str  # Selected ONNX execution provider
     hidden_dim: int  # 768 or 1024
+    family: str = "deberta"  # 'deberta' or 'modernbert'
 
 
 def _detect_system_ram() -> int:
@@ -128,24 +132,45 @@ def _detect_system_ram() -> int:
 
 
 def _detect_vram(providers: list[str]) -> int | None:
-    """Attempt to detect dedicated GPU VRAM if CUDA/ROCm is available."""
-    if "CUDAExecutionProvider" not in providers and "ROCMExecutionProvider" not in providers:
-        return None
+    """Attempt to detect dedicated GPU VRAM if CUDA/ROCm/DirectML is available."""
+    # 1. NVIDIA / ROCm via nvidia-smi
+    if "CUDAExecutionProvider" in providers or "ROCMExecutionProvider" in providers:
+        try:
+            out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+            )
+            lines = out.strip().splitlines()
+            if lines:
+                mb = int(lines[0].strip())
+                return mb * 1024 * 1024
+        except Exception:
+            pass
 
-    # Try nvidia-smi query if available
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1,
-        )
-        lines = out.strip().splitlines()
-        if lines:
-            mb = int(lines[0].strip())
-            return mb * 1024 * 1024
-    except Exception:
-        pass
+    # 2. Windows DirectML (AMD Radeon / Intel Arc / Windows APUs)
+    if (
+        any(p in providers for p in ("DmlExecutionProvider", "DirectMLExecutionProvider"))
+        and sys.platform == "win32"
+    ):
+        try:
+            out = subprocess.check_output(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_VideoController | Measure-Object -Property AdapterRAM -Maximum).Maximum",
+                ],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+            )
+            v = int(out.strip())
+            if v > 0:
+                return v
+        except Exception:
+            pass
 
     return None
 
@@ -188,18 +213,20 @@ def _best_provider(available_providers: list[str]) -> str:
 def resolve_slab(
     requested_slab: str = "auto",
     profile: HardwareProfile | None = None,
+    family: str = "deberta",
 ) -> SlabConfig:
     """
     Resolve model tier and execution provider based on requested slab or auto hardware probing.
 
     Hierarchy:
-    - Slab 3 (Large): Dedicated GPU with >= 8GB VRAM -> DeBERTa-v3-large (FP16, d=1024).
-    - Slab 2 (Base): Apple Silicon CoreML OR GPU >= 4GB VRAM OR Host RAM >= 16GB -> DeBERTa-v3-base (INT8, d=768).
-    - Slab 1 (Small): Host RAM < 16GB or CPU-only -> DeBERTa-v3-small (INT8, d=768).
+    - Slab 3 (Large): Dedicated GPU with >= 8GB VRAM -> DeBERTa-v3-large / ModernBERT-large (FP16/FP32, d=1024).
+    - Slab 2 (Base): Apple Silicon CoreML OR GPU >= 4GB VRAM OR Host RAM >= 16GB -> DeBERTa-v3-base / ModernBERT-base (INT8, d=768).
+    - Slab 1 (Small): Host RAM < 16GB or CPU-only -> DeBERTa-v3-small / ModernBERT-base (INT8, d=768).
 
     Args:
         requested_slab: 'auto', 'small', 'base', or 'large'.
         profile: Optional pre-probed HardwareProfile (probed automatically if None).
+        family: Model architecture family ('deberta' or 'modernbert').
 
     Returns:
         SlabConfig containing tier, model_id, quantization, provider, and hidden_dim.
@@ -220,7 +247,7 @@ def resolve_slab(
     else:
         # Automated Resolution Hierarchy
         has_gpu = any(
-            p in ("CUDAExecutionProvider", "ROCMExecutionProvider", "DirectMLExecutionProvider")
+            p in ("CUDAExecutionProvider", "ROCMExecutionProvider", "DirectMLExecutionProvider", "DmlExecutionProvider")
             for p in profile.providers
         )
         if has_gpu and profile.vram_bytes is not None and profile.vram_bytes >= 8 * 1024**3:
@@ -235,13 +262,17 @@ def resolve_slab(
             tier = "small"
 
     defn = SLAB_DEFINITIONS[tier]
+    model_id = defn.get("modernbert_model_id" if family == "modernbert" else "model_id", defn["model_id"])
+
     return SlabConfig(
         tier=tier,
-        model_id=defn["model_id"],
+        model_id=model_id,
         quantization=defn["quantization"],
         provider=best_provider,
         hidden_dim=defn["hidden_dim"],
+        family=family,
     )
+
 
 
 def get_default_cache_dir() -> Path:
