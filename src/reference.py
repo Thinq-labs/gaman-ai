@@ -17,11 +17,11 @@ import csv
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
-from typing import Any
 import xml.etree.ElementTree as ET
 import zipfile
+from pathlib import Path
+from typing import Any
 
 STOP_WORDS = frozenset({
     "a", "about", "above", "after", "again", "against", "all", "an", "and",

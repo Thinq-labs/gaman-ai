@@ -340,3 +340,30 @@
 - [x] 5. Full Verification Gate:
   - [x] Full test suite: **256 passed in 56.15s** (0 failed, 0 skipped, 100% green).
   - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.
+
+---
+
+## v0.3 - Pillar 17: Reference Grounding Engine (`--reference` for Docx, Files, Datasets, & Prompts) and ModernBERT Auto-Calibration
+- [x] 1. Zero-Dependency Reference Ingestion & Retrieval (`src/reference.py`):
+  - [x] Pure stdlib `.docx` extraction using `zipfile` and `xml.etree.ElementTree` without `python-docx` or heavy external dependencies.
+  - [x] JSON text extraction via `extract_text_from_json` and plain text/markdown ingestion.
+  - [x] Atomic proposition chunking via `segment_clauses` (bounded to 128 characters per clause).
+  - [x] Sub-millisecond BM25 retrieval via `find_relevant_clauses` scoring query terms against candidate clauses.
+  - [x] `ReferenceExtractor` class with SHA-256 caching for instant repeated queries and OS-safe path resolution.
+  - [x] Tabular dataset loader supporting `.csv` and `.jsonl` schemas.
+- [x] 2. Grounding Integration Across Engine Primitives (`src/engine.py` & `src/cascade.py`):
+  - [x] Added `reference: str | Path | None = None` to `choice()`, `decide()`, `noul()`, and `score()`.
+  - [x] Tabular grounding routes through in-memory Ridge adapter (`fit_adapter`) using contextualized option-aligned NLI representation vectors via `_embed_options_batch`.
+  - [x] Document/prompt grounding fuses retrieved clauses into `«[REFERENCE POLICY]: {clauses} | [CONTEXT]: {sanitized_state}»`.
+  - [x] Attached `"grounded": True` and `"relevant_clauses": [...]` to output payloads.
+  - [x] Forwarded `reference` through `SpeculativeCascadeEngine` draft and verifier calls.
+- [x] 3. ModernBERT Auto-Calibration (`src/engine.py`):
+  - [x] Auto-detected ModernBERT architecture (`is_modernbert`) and defaulted `temp_choice = 0.25` (vs `1.0` for DeBERTa) when uncalibrated for decisive confidence distributions.
+  - [x] Fixed `load_calibration` to respect default temperature scaling when no calibration file is on disk.
+- [x] 4. Universal CLI Grounding Enablement (`src/cli.py`):
+  - [x] Added `--reference` argument to `choice`, `noul`, `score`, and `batch` parsers.
+  - [x] Forwarded reference parameters in `handle_choice`, `handle_noul`, `handle_score`, and `handle_batch`.
+- [x] 5. Test Suite & Verification:
+  - [x] Created `tests/test_reference.py` with 15 tests covering extraction, BM25 retrieval, tabular CSV adapters, ModernBERT auto-calibration, and CLI grounding (15/15 passed).
+  - [x] Full regression test suite passing: **271 passed in 64.63s** (100% green, 0 failed, 0 skipped).
+  - [x] Zero Ruff errors across `src/`, `tests/`, and `scripts/`.

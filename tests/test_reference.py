@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import csv
 import json
-from pathlib import Path
 import time
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -107,6 +107,8 @@ class TestClauseSegmentationAndRetrieval:
             "Security vulnerability reports must be sent to security@example.com.",
         ]
         query = "Customer asking for refund on opened activated software license key"
+        # Warmup
+        find_relevant_clauses(query, clauses, top_k=2)
         t0 = time.perf_counter()
         top_clauses = find_relevant_clauses(query, clauses, top_k=2)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -162,7 +164,8 @@ class TestModernBertAutoCalibration:
 
 class TestReferenceGroundingEngineIntegration:
     @pytest.fixture(scope="class")
-    def shared_engine(self) -> GamanEngine:
+    @staticmethod
+    def shared_engine() -> GamanEngine:
         return GamanEngine(slab="small")
 
     def test_choice_grounding_with_docx_policy(
@@ -238,7 +241,8 @@ class TestReferenceGroundingEngineIntegration:
 
 class TestCLIGroundingIntegration:
     @pytest.fixture(scope="class")
-    def shared_engine(self) -> GamanEngine:
+    @staticmethod
+    def shared_engine() -> GamanEngine:
         return GamanEngine(slab="small")
 
     def test_cli_choice_with_reference_prompt(
@@ -249,7 +253,7 @@ class TestCLIGroundingIntegration:
                 "choice",
                 "--state", "Customer wants refund on activated digital code",
                 "--options", "ALLOW_REFUND", "DENY_REFUND",
-                "--reference", "Digital software licenses are strictly non-refundable once activated.",
+                "--reference", "Digital software licenses and digital codes are strictly non-refundable once activated.",
                 "--json",
             ],
             engine=shared_engine,

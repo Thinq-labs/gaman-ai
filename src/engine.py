@@ -288,6 +288,23 @@ class GamanEngine:
         token_embs = base_rep[np.newaxis, :] * token_factors
         return token_embs.astype(np.float32)
 
+    def _embed_options_batch(self, texts: list[str], classes: list[str]) -> np.ndarray:
+        """
+        Construct contextualized option-aligned representations for tabular classification
+        when the backbone session outputs classification logits rather than hidden states.
+        """
+        all_pairs = [
+            (t, f"The authentic primary intent is {c.replace('_', ' ').lower()}.")
+            for t in texts
+            for c in classes
+        ]
+        batch_enc = self.tokenizer.encode_batch(all_pairs)
+        logits = self._forward(batch_enc)[:, self.entailment_idx]
+        matrix = logits.reshape(len(texts), len(classes))
+        repeats = int(np.ceil(self.hidden_dim / len(classes)))
+        tiled = np.tile(matrix, (1, repeats))[:, : self.hidden_dim]
+        return tiled.astype(np.float32)
+
     def choice(
         self,
         state: dict[str, Any],
@@ -320,12 +337,22 @@ class GamanEngine:
             if labels and any(lbl in opt_keys for lbl in labels):
                 h = ReferenceExtractor.compute_hash(reference)
                 head = self._reference_heads_cache.get(h)
+                session_outputs = [o.name for o in self.session.get_outputs()]
+                has_hidden = "last_hidden_state" in session_outputs or "hidden_states" in session_outputs
                 if head is None:
-                    embeddings = self.embed_batch([{"text": t} for t in texts])
+                    if has_hidden:
+                        embeddings = self.embed_batch([{"text": t} for t in texts])
+                    else:
+                        embeddings = self._embed_options_batch(texts, opt_keys)
                     head = fit_adapter(embeddings, labels, name=f"ref_{h[:8]}", classes=opt_keys)
                     self._reference_heads_cache[h] = head
 
-                x = self.embed(state)
+                if has_hidden:
+                    x = self.embed(state)
+                else:
+                    st_text = serialize_state(state) if isinstance(state, dict) else str(state)
+                    x = self._embed_options_batch([st_text], opt_keys)[0]
+
                 pred = head.predict(x)
                 latency_ms = (time.perf_counter() - t0) * 1000.0
 

@@ -1,15 +1,16 @@
 # Session Memory & Scratchpad
 
-**Last Updated:** 2026-10-11T17:15:00+05:30
-**Current Status:** Gaman Next-Gen ("Titanium" v0.3) fully executed and verified:
-1. ModernBERT-base (86M) and ModernBERT-large (435M) exported to ONNX FP32 and dynamic INT8 (`models/modernbert/`).
-2. RLCD Knowledge Distillation executed on `banking77_8class.csv` (1,077 samples): 95.45% student-teacher agreement achieved; exported student to ONNX dynamic INT8 (`models/distilled_student/onnx/`).
-3. Decoupled Late-Interaction wired into `GamanEngine` (`src/engine.py` & `src/late_interaction.py`).
-4. Hardware enablement: `onnxruntime-directml` installed; Windows AMD Radeon GPU DirectML support active with APU edge safeguard in `src/resolver.py`.
-5. Full test suite: **256 passed in 56.15s** (0 failed, 100% green); Ruff clean.
+**Last Updated:** 2026-10-14T17:55:00+05:30
+**Current Status:** Gaman Next-Gen Reference Grounding Engine (`--reference` for Docx, Files, Datasets, & Prompts) and ModernBERT Auto-Calibration fully implemented and verified:
+1. `src/reference.py`: Zero-dependency `.docx` extraction (via stdlib `zipfile` + `xml.etree.ElementTree`), JSON text extraction, tabular loading (.csv, .jsonl), atomic proposition chunking (`segment_clauses`), SHA-256 caching, and sub-millisecond BM25 clause retrieval (`find_relevant_clauses`).
+2. `src/engine.py` & `src/cascade.py`: Grounding integrated across `choice`, `decide`, `noul`, and `score`. Tabular datasets route via in-memory Ridge adapter (`fit_adapter`) using contextualized option-aligned representations via `_embed_options_batch`. Documents and prompts fuse retrieved clauses into premise `«[REFERENCE POLICY]: {clauses} | [CONTEXT]: {sanitized_state}»`.
+3. ModernBERT Auto-Calibration: Auto-detects ModernBERT architecture and sets uncalibrated `default_temp_choice = 0.25` (vs `1.0` for DeBERTa), producing decisive probabilities (>80% confidence) out-of-the-box.
+4. CLI Grounding: Exposed `--reference` across `choice`, `noul`, `score`, and `batch` subcommands.
+5. Full test suite: **271 passed in 64.63s** (100% green, 0 failed, 0 skipped); Ruff 100% clean.
 
 ## Verification Metrics
-- Total Tests: **256 passed in 56.15s** (0 skipped, 0 failed, 100% green).
+- Total Tests: **271 passed in 64.63s** (0 skipped, 0 failed, 100% green).
+- Reference Grounding Tests: **15 passed** (`tests/test_reference.py`).
 - Decoupled Late-Interaction Tests: **12 passed** (`tests/test_late_interaction.py`).
 - Speculative Cascade Tests: **8 passed** (`tests/test_cascade.py`).
 - Distillation Mathematics Tests: **5 passed** (`tests/test_distillation.py`).
@@ -19,8 +20,9 @@
 - Adapter Tests: **10 passed** (`tests/test_heads.py`).
 
 ## Key Architectural Invariants
-- **Zero third-party network dependencies in runtime:** pure standard library `urllib.request`.
+- **Zero third-party network/parsing dependencies in runtime:** pure standard library (`urllib.request`, `zipfile`, `xml.etree.ElementTree`, `csv`, `pathlib`).
 - **Zero torch / transformers in runtime:** strictly `onnxruntime`, `tokenizers`, `numpy`.
+- **Sub-20ms Edge Latency Budget Preserved:** Sub-millisecond BM25 search (<1ms) and cached tabular adapter lookup (<1ms).
 - **Atomic File Writes:** No half-downloaded or corrupted model files from interrupted network transfers.
 - **Bit-For-Bit Embedding Identity:** `embed_batch(states)[i] == embed(states[i])`.
 - **Backward Compatibility:** Single-model flat deployments (`models/backbone.onnx`) continue to run seamlessly without relocation.
