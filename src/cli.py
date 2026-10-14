@@ -77,7 +77,8 @@ def handle_choice(args: argparse.Namespace, engine: GamanEngine) -> int:
         print("Error: At least one option must be provided.", file=sys.stderr)
         return 1
 
-    result = engine.choice(state, options)
+    reference = getattr(args, "reference", None)
+    result = engine.choice(state, options, reference=reference)
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -117,7 +118,8 @@ def handle_choice(args: argparse.Namespace, engine: GamanEngine) -> int:
 
 def handle_noul(args: argparse.Namespace, engine: GamanEngine) -> int:
     state = parse_state_input(args.state)
-    result = engine.noul(state, args.predicate)
+    reference = getattr(args, "reference", None)
+    result = engine.noul(state, args.predicate, reference=reference)
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -143,7 +145,8 @@ def handle_noul(args: argparse.Namespace, engine: GamanEngine) -> int:
 
 def handle_score(args: argparse.Namespace, engine: GamanEngine) -> int:
     state = parse_state_input(args.state)
-    result = engine.score(state, args.criterion)
+    reference = getattr(args, "reference", None)
+    result = engine.score(state, args.criterion, reference=reference)
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -335,15 +338,16 @@ def handle_batch(args: argparse.Namespace, engine: GamanEngine) -> int:
         csv_writer: csv.DictWriter | None = None
         processed_count = 0
 
+        ref = getattr(args, "reference", None)
         for row in row_stream:
             state = _extract_state(row, args.state_column)
 
             if primitive == "choice":
-                eval_res = engine.choice(state, options)
+                eval_res = engine.choice(state, options, reference=ref)
             elif primitive == "noul":
-                eval_res = engine.noul(state, args.predicate)
+                eval_res = engine.noul(state, args.predicate, reference=ref)
             else:
-                eval_res = engine.score(state, args.criterion)
+                eval_res = engine.score(state, args.criterion, reference=ref)
 
             if output_is_csv:
                 # Augment row with gaman_* columns
@@ -695,18 +699,36 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="List of options (space or comma separated)",
     )
+    p_choice.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to reference file (.docx, .txt, .csv) or inline policy prompt string",
+    )
     p_choice.add_argument("--json", action="store_true", help="Output raw schema JSON")
 
     # 2. noul
     p_noul = subparsers.add_parser("noul", help="Guardrail / predicate compliance check")
     p_noul.add_argument("--state", type=str, required=True, help="Input state (JSON or text)")
     p_noul.add_argument("--predicate", type=str, required=True, help="Predicate compliance condition")
+    p_noul.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to reference file (.docx, .txt, .csv) or inline policy prompt string",
+    )
     p_noul.add_argument("--json", action="store_true", help="Output raw schema JSON")
 
     # 3. score
     p_score = subparsers.add_parser("score", help="Continuous context evaluation [0.0, 1.0]")
     p_score.add_argument("--state", type=str, required=True, help="Input state (JSON or text)")
     p_score.add_argument("--criterion", type=str, required=True, help="Continuous evaluation criterion")
+    p_score.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to reference file (.docx, .txt, .csv) or inline policy prompt string",
+    )
     p_score.add_argument("--json", action="store_true", help="Output raw schema JSON")
 
     # 4. batch
@@ -724,6 +746,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--options", type=str, nargs="+", default=None, help="Options for choice primitive")
     p_batch.add_argument("--predicate", type=str, default=None, help="Predicate for noul primitive")
     p_batch.add_argument("--criterion", type=str, default=None, help="Criterion for score primitive")
+    p_batch.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to reference file (.docx, .txt, .csv) or inline policy prompt string",
+    )
     p_batch.add_argument("--batch-size", type=int, default=16, help="Evaluation batch size (default: 16)")
 
     # 5. calibrate

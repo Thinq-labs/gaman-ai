@@ -82,7 +82,10 @@ class SpeculativeCascadeEngine:
         return self.verifier_engine.slab_config.tier if self.verifier_engine else None
 
     def choice(
-        self, state: dict[str, Any], options: list[str] | dict[str, str]
+        self,
+        state: dict[str, Any],
+        options: list[str] | dict[str, str],
+        reference: str | Path | None = None,
     ) -> dict[str, Any]:
         """
         Speculative semantic routing.
@@ -95,7 +98,7 @@ class SpeculativeCascadeEngine:
         """
         t0 = time.perf_counter()
 
-        draft_res = self.draft_engine.choice(state, options)
+        draft_res = self.draft_engine.choice(state, options, reference=reference)
 
         prediction_set = draft_res.get("prediction_set", [])
         is_singleton = len(prediction_set) == 1
@@ -114,7 +117,7 @@ class SpeculativeCascadeEngine:
             return draft_res
 
         # Ambiguity, OOD, or conflict detected -> cascade to verifier
-        verifier_res = self.verifier_engine.choice(state, options)
+        verifier_res = self.verifier_engine.choice(state, options, reference=reference)
         total_lat = (time.perf_counter() - t0) * 1000.0
 
         verifier_res["cascaded"] = True
@@ -126,12 +129,20 @@ class SpeculativeCascadeEngine:
         return verifier_res
 
     def decide(
-        self, state: dict[str, Any], options: list[str] | dict[str, str]
+        self,
+        state: dict[str, Any],
+        options: list[str] | dict[str, str],
+        reference: str | Path | None = None,
     ) -> dict[str, Any]:
         """Alias for choice() matching enterprise decision contract."""
-        return self.choice(state, options)
+        return self.choice(state, options, reference=reference)
 
-    def noul(self, state: dict[str, Any], predicate: str) -> dict[str, Any]:
+    def noul(
+        self,
+        state: dict[str, Any],
+        predicate: str,
+        reference: str | Path | None = None,
+    ) -> dict[str, Any]:
         """
         Speculative policy predicate verification.
 
@@ -139,7 +150,7 @@ class SpeculativeCascadeEngine:
         returns draft output. Otherwise, cascades to verifier.
         """
         t0 = time.perf_counter()
-        draft_res = self.draft_engine.noul(state, predicate)
+        draft_res = self.draft_engine.noul(state, predicate, reference=reference)
         prob = draft_res.get("probability", 0.5)
         margin_from_boundary = abs(prob - 0.5)
 
@@ -153,7 +164,7 @@ class SpeculativeCascadeEngine:
             draft_res["cascade_latency_ms"] = float(round(total_lat, 2))
             return draft_res
 
-        verifier_res = self.verifier_engine.noul(state, predicate)
+        verifier_res = self.verifier_engine.noul(state, predicate, reference=reference)
         total_lat = (time.perf_counter() - t0) * 1000.0
         verifier_res["cascaded"] = True
         verifier_res["speculative_hit"] = False
@@ -168,6 +179,7 @@ class SpeculativeCascadeEngine:
         criterion: str,
         min_bound: float = 0.0,
         max_bound: float = 1.0,
+        reference: str | Path | None = None,
     ) -> dict[str, Any]:
         """
         Speculative rubric alignment.
@@ -176,7 +188,7 @@ class SpeculativeCascadeEngine:
         """
         t0 = time.perf_counter()
         draft_res = self.draft_engine.score(
-            state, criterion, min_bound=min_bound, max_bound=max_bound
+            state, criterion, min_bound=min_bound, max_bound=max_bound, reference=reference
         )
         total_lat = (time.perf_counter() - t0) * 1000.0
         draft_res["cascaded"] = False

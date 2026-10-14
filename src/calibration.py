@@ -528,6 +528,23 @@ def apply_logit_prior_matrix(
             if re.search(exceed_predicate_regex, combined):
                 penalized[i] += 4.0
 
+    # 7. Policy Guardrail & Compliance Violation Bridge
+    violation_ref_regex = (
+        r"\b(not\s+authorized|strictly\s+forbidden|forbidden|prohibited|not\s+permitted|disallowed|unauthorized)\b"
+    )
+    violation_predicate_regex = (
+        r"\b(violat\w*|against\s+(?:company\s+)?(?:rules|policy)|infring\w*|unauthorized|prohibited|forbidden)\b"
+    )
+    if re.search(violation_ref_regex, txt):
+        for i, opt in enumerate(options):
+            combined = (
+                opt.lower().replace("_", " ")
+                + " "
+                + (descs[i].lower() if descs and i < len(descs) else "")
+            )
+            if re.search(violation_predicate_regex, combined):
+                penalized[i] += 4.0
+
     return penalized, dual_intent_flag
 
 

@@ -27,8 +27,9 @@ from src.calibration import (
     regularize_and_scale_logits,
 )
 from src.conformal import ConformalPredictor
-from src.heads import CustomLinearHead
+from src.heads import CustomLinearHead, fit_adapter
 from src.late_interaction import LateInteractionScorer, StateRepresentationCache
+from src.reference import ReferenceExtractor
 from src.resolver import ModelNotFoundError, SlabConfig, resolve_model_path, resolve_slab
 from src.serializer import (
     build_nli_pair,
@@ -67,6 +68,7 @@ class GamanEngine:
         backbone_filename: str = "backbone.onnx",
         silent: bool = False,
         late_interaction: bool = False,
+        family: str = "deberta",
     ) -> None:
         """
         Initialize inference session and tokenizer with dynamic Spec Slab resolution.
@@ -77,6 +79,7 @@ class GamanEngine:
             backbone_filename: Name of ONNX model file inside resolved tier folder.
             silent: Suppress progress outputs during automatic downloads.
             late_interaction: Enable decoupled two-tower late interaction and state caching.
+            family: Model architecture family ('deberta' or 'modernbert').
         """
         # Backwards-compatibility check for positional models_dir
         if isinstance(slab, Path) or (
@@ -88,7 +91,7 @@ class GamanEngine:
             slab = "auto"
 
         self.requested_slab: str = slab
-        self.slab_config: SlabConfig = resolve_slab(requested_slab=slab)
+        self.slab_config: SlabConfig = resolve_slab(requested_slab=slab, family=family)
         self.models_dir: Path = resolve_model_path(
             tier=self.slab_config.tier,
             models_dir=models_dir,
@@ -126,6 +129,16 @@ class GamanEngine:
         label2id: dict[str, int] = self.config.get("label2id", {})
         self.entailment_idx: int = label2id.get("entailment", 1)
 
+        # Detect ModernBERT architecture for auto-temperature scaling
+        self.is_modernbert: bool = (
+            getattr(self.slab_config, "family", "deberta") == "modernbert"
+            or "modernbert" in getattr(self.slab_config, "model_id", "").lower()
+            or "modernbert" in str(self.model_path).lower()
+            or self.config.get("model_type") == "modernbert"
+            or any("modernbert" in str(a).lower() for a in self.config.get("architectures", []))
+        )
+        self.default_temp_choice: float = 0.25 if self.is_modernbert else 1.0
+
         # 2. Hardware Dispatch
         self.active_provider, self.session = self._init_session()
 
@@ -135,14 +148,15 @@ class GamanEngine:
         # 4. Explicit Warm-up to eliminate first-query scratchpad latency penalty
         self._warmup()
 
-        # 5. Probability Calibration Parameters (T=1.0 default if uncalibrated)
-        self.temp_choice: float = 1.0
+        # 5. Probability Calibration Parameters (T=1.0 default for DeBERTa, T=0.25 for ModernBERT)
+        self.temp_choice: float = self.default_temp_choice
         self.temp_noul: float = 1.0
         self.temp_score: float = 1.0
         self.load_calibration()
 
         # 6. Lightweight Linear Adapter Heads Cache
         self._loaded_heads: dict[str, CustomLinearHead] = {}
+        self._reference_heads_cache: dict[str, CustomLinearHead] = {}
 
         # 7. Static Neutral Baseline Priors Cache
         self._baseline_priors: dict[str, float] = {}
@@ -184,12 +198,19 @@ class GamanEngine:
     def load_calibration(self, calibration_path: str | Path | None = None) -> None:
         """
         Load temperature scaling calibration parameters from calibration.json.
-        If the file does not exist, defaults to neutral temperatures (T=1.0).
+        If the file does not exist, defaults to neutral temperatures (T=1.0 for DeBERTa, T=0.25 for ModernBERT).
         """
         path = Path(calibration_path) if calibration_path else (self.models_dir / "calibration.json")
+        default_temp = getattr(self, "default_temp_choice", 0.25 if getattr(self, "is_modernbert", False) else 1.0)
+        if not path.is_file():
+            self.temp_choice = default_temp
+            self.temp_noul = 1.0
+            self.temp_score = 1.0
+            return
+
         cal_data = load_calibration(path)
         temps = cal_data.get("temperatures", {})
-        self.temp_choice = float(temps.get("choice", 1.0))
+        self.temp_choice = float(temps.get("choice", default_temp))
         self.temp_noul = float(temps.get("noul", 1.0))
         self.temp_score = float(temps.get("score", 1.0))
 
@@ -267,19 +288,21 @@ class GamanEngine:
         token_embs = base_rep[np.newaxis, :] * token_factors
         return token_embs.astype(np.float32)
 
-    # ── Primitives ────────────────────────────────────────────────────────────
-
     def choice(
-        self, state: dict[str, Any], options: list[str] | dict[str, str]
+        self,
+        state: dict[str, Any],
+        options: list[str] | dict[str, str],
+        reference: str | Path | None = None,
     ) -> dict[str, Any]:
         """
         Semantic Routing: Evaluates state against K options using batched NLI cross-encoding.
         Supports adversarial framing, delimiter sandboxing, semantic intent expansion,
-        verbatim token dampening, and entropy-based OOD gating.
+        reference grounding, verbatim token dampening, and entropy-based OOD gating.
 
         Args:
             state: Arbitrary JSON dictionary representing context.
             options: List of choice strings or mapping of choice keys to semantic definitions (K >= 1).
+            reference: Optional path to reference file (.docx, .txt, .csv) or inline policy prompt string.
 
         Returns:
             dict matching Universal API Contract:
@@ -289,6 +312,48 @@ class GamanEngine:
             raise ValueError("options list cannot be empty")
 
         t0 = time.perf_counter()
+
+        # Tabular Dataset Grounding Fast Path (.csv or .jsonl)
+        if reference is not None and ReferenceExtractor.is_tabular_file(reference):
+            texts, labels = ReferenceExtractor.load_dataset(reference)
+            opt_keys = list(options.keys()) if isinstance(options, dict) else list(options)
+            if labels and any(lbl in opt_keys for lbl in labels):
+                h = ReferenceExtractor.compute_hash(reference)
+                head = self._reference_heads_cache.get(h)
+                if head is None:
+                    embeddings = self.embed_batch([{"text": t} for t in texts])
+                    head = fit_adapter(embeddings, labels, name=f"ref_{h[:8]}", classes=opt_keys)
+                    self._reference_heads_cache[h] = head
+
+                x = self.embed(state)
+                pred = head.predict(x)
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+
+                probs = np.array([float(pred["probabilities"].get(k, 0.0)) for k in opt_keys], dtype=np.float64)
+                if np.sum(probs) > 0:
+                    probs = probs / np.sum(probs)
+                decision_meta = compute_decision_metadata(probs, opt_keys)
+                conformal_res = self.conformal_predictor.predict_set(
+                    probabilities=probs,
+                    classes=opt_keys,
+                )
+
+                return {
+                    "primitive": "choice",
+                    "selection": decision_meta["selection"],
+                    "confidence": decision_meta["confidence"],
+                    "margin": decision_meta["margin"],
+                    "entropy": decision_meta["entropy"],
+                    "tier": decision_meta["tier"],
+                    "escalate_to_system2": decision_meta["escalate_to_system2"],
+                    "probabilities": decision_meta["probabilities"],
+                    "prediction_set": conformal_res["prediction_set"],
+                    "certified_safe": conformal_res["certified_safe"],
+                    "coverage_guarantee": conformal_res["coverage_guarantee"],
+                    "latency_ms": float(round(latency_ms, 2)),
+                    "grounded": True,
+                    "reference_type": "tabular_adapter",
+                }
 
         # Decoupled Two-Tower Late-Interaction Fast Path
         if self.late_interaction:
@@ -337,7 +402,17 @@ class GamanEngine:
             descriptions = [k.replace("_", " ").lower() for k in keys]
             has_dict_options = False
 
-        # 2. Pre-Tokenization Sanitization & Delimiter Sandboxing
+        # 2. Reference Document / Prompt Grounding (Extract Relevant Clauses in <1ms)
+        reference_clauses: list[str] = []
+        if reference is not None:
+            doc_clauses = ReferenceExtractor.extract_clauses(reference)
+            if doc_clauses:
+                state_query = serialize_state(state) if isinstance(state, dict) else str(state)
+                reference_clauses = ReferenceExtractor.find_relevant_clauses(
+                    state_query, doc_clauses, top_k=3
+                )
+
+        # 3. Pre-Tokenization Sanitization & Delimiter Sandboxing
         serialized = serialize_state(state)
         sanitized_state, zero_dampeners, figurative_modifiers = sanitize_adversarial_input(
             serialized
@@ -356,7 +431,12 @@ class GamanEngine:
         }
         is_text_payload = any(k in text_fields for k in state) or has_dict_options
 
-        if is_text_payload:
+        if reference_clauses:
+            ref_context = "; ".join(reference_clauses)
+            premise = encapsulate_payload(
+                f"[REFERENCE POLICY]: {ref_context} | [CONTEXT]: {sanitized_state}"
+            )
+        elif is_text_payload:
             payload_content = sanitized_state
             if figurative_modifiers:
                 payload_content += (
@@ -367,7 +447,7 @@ class GamanEngine:
         else:
             premise = sanitized_state
 
-        # 3. Semantic Intent Hypotheses
+        # 4. Semantic Intent Hypotheses
         hypotheses: list[str] = []
         for desc in descriptions:
             cleaned = desc.strip()
@@ -377,7 +457,7 @@ class GamanEngine:
             else:
                 hypotheses.append(f"The decision is to {cleaned}.")
 
-        # 4. Vectorized Pair Construction: construct ONLY candidate pairs (batch_size = K)
+        # 5. Vectorized Pair Construction: construct ONLY candidate pairs (batch_size = K)
         pairs = [(premise, hyp) for hyp in hypotheses]
 
         # 5. Batched Tokenization with Strict max_length=64 Truncation
@@ -491,18 +571,25 @@ class GamanEngine:
             "coverage_guarantee": conformal_res["coverage_guarantee"],
             "latency_ms": float(round(latency_ms, 2)),
         }
+        if reference is not None:
+            result["grounded"] = True
+            if reference_clauses:
+                result["relevant_clauses"] = reference_clauses
         if decision_meta["escalate_to_system2"]:
             result["low_confidence"] = True
 
         return result
 
     def decide(
-        self, state: dict[str, Any], options: list[str] | dict[str, str]
+        self,
+        state: dict[str, Any],
+        options: list[str] | dict[str, str],
+        reference: str | Path | None = None,
     ) -> dict[str, Any]:
         """
         Alias for choice() providing the enterprise decision contract.
         """
-        return self.choice(state, options)
+        return self.choice(state, options, reference=reference)
 
     @staticmethod
     def _normalize_predicate(predicate: str) -> str:
@@ -526,13 +613,19 @@ class GamanEngine:
             core = core + "."
         return core
 
-    def noul(self, state: dict[str, Any], predicate: str) -> dict[str, Any]:
+    def noul(
+        self,
+        state: dict[str, Any],
+        predicate: str,
+        reference: str | Path | None = None,
+    ) -> dict[str, Any]:
         """
         Predicate / Guardrail check: Evaluates if state satisfies a strict condition.
 
         Args:
             state: Arbitrary JSON dictionary representing context.
             predicate: Compliance / policy question string.
+            reference: Optional path to reference file (.docx, .txt, .csv) or inline policy prompt string.
 
         Returns:
             dict matching Universal API Contract:
@@ -541,6 +634,23 @@ class GamanEngine:
         t0 = time.perf_counter()
         hypothesis = self._normalize_predicate(predicate)
         premise, hypothesis = build_nli_pair(state, hypothesis)
+
+        reference_clauses: list[str] = []
+        if reference is not None:
+            doc_clauses = ReferenceExtractor.extract_clauses(reference)
+            if doc_clauses:
+                state_query = f"{premise} {predicate}"
+                reference_clauses = ReferenceExtractor.find_relevant_clauses(
+                    state_query, doc_clauses, top_k=3
+                )
+
+        if reference_clauses:
+            ref_context = "; ".join(reference_clauses)
+            sanitized_state, _, _ = sanitize_adversarial_input(premise)
+            premise = encapsulate_payload(
+                f"[REFERENCE POLICY]: {ref_context} | [CONTEXT]: {sanitized_state}"
+            )
+
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
         logits = self._forward(enc)[0].astype(np.float64)  # [num_labels]
@@ -563,20 +673,35 @@ class GamanEngine:
         passed = bool(prob > 0.5)
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
-        return {
+        res: dict[str, Any] = {
             "primitive": "noul",
             "passed": passed,
             "probability": float(round(prob, 4)),
             "latency_ms": float(round(latency_ms, 2)),
         }
+        if reference is not None:
+            res["grounded"] = True
+            if reference_clauses:
+                res["relevant_clauses"] = reference_clauses
+        return res
 
-    def score(self, state: dict[str, Any], criterion: str) -> dict[str, Any]:
+    def score(
+        self,
+        state: dict[str, Any],
+        criterion: str,
+        min_bound: float = 0.0,
+        max_bound: float = 1.0,
+        reference: str | Path | None = None,
+    ) -> dict[str, Any]:
         """
-        Context Evaluator: Evaluates continuous scalar degree bounded between 0.0 and 1.0.
+        Context Evaluator: Evaluates continuous scalar degree bounded between min_bound and max_bound.
 
         Args:
             state: Arbitrary JSON dictionary representing context.
             criterion: Continuous evaluation criterion string.
+            min_bound: Lower bound for scalar output (default 0.0).
+            max_bound: Upper bound for scalar output (default 1.0).
+            reference: Optional path to reference file (.docx, .txt, .csv) or inline policy prompt string.
 
         Returns:
             dict matching Universal API Contract:
@@ -584,6 +709,23 @@ class GamanEngine:
         """
         t0 = time.perf_counter()
         premise, hypothesis = build_nli_pair(state, criterion)
+
+        reference_clauses: list[str] = []
+        if reference is not None:
+            doc_clauses = ReferenceExtractor.extract_clauses(reference)
+            if doc_clauses:
+                state_query = f"{premise} {criterion}"
+                reference_clauses = ReferenceExtractor.find_relevant_clauses(
+                    state_query, doc_clauses, top_k=3
+                )
+
+        if reference_clauses:
+            ref_context = "; ".join(reference_clauses)
+            sanitized_state, _, _ = sanitize_adversarial_input(premise)
+            premise = encapsulate_payload(
+                f"[REFERENCE GUIDELINE]: {ref_context} | [CONTEXT]: {sanitized_state}"
+            )
+
         enc = self.tokenizer.encode(premise, pair=hypothesis)
 
         logits = self._forward(enc)[0]  # [num_labels]
@@ -593,13 +735,22 @@ class GamanEngine:
         exp_logits = np.exp(scaled_logits - np.max(scaled_logits))
         probs = exp_logits / np.sum(exp_logits)
         val = float(probs[self.entailment_idx])
+
+        if min_bound != 0.0 or max_bound != 1.0:
+            val = min_bound + val * (max_bound - min_bound)
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
-        return {
+        res: dict[str, Any] = {
             "primitive": "score",
             "value": float(round(val, 4)),
             "latency_ms": float(round(latency_ms, 2)),
         }
+        if reference is not None:
+            res["grounded"] = True
+            if reference_clauses:
+                res["relevant_clauses"] = reference_clauses
+        return res
 
     def embed(self, state: dict[str, Any]) -> np.ndarray:
         """
