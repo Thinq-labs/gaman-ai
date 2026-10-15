@@ -93,7 +93,7 @@ pip install -e .
 
 *Runtime requirements: Python >= 3.10, `onnxruntime`, `tokenizers`, `numpy`.*
 
-### 2. Python SDK
+### 2. Python SDKs
 
 ```python
 from src.engine import GamanEngine
