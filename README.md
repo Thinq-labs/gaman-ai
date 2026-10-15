@@ -34,7 +34,7 @@ In a single bidirectional forward pass via ONNX Runtime, Gaman AI evaluates stru
 
 ---
 
-## System Architecture
+## System Architectures
 
 <p align="center">
   <img src="docs/assets/system_architecture.jpg" alt="Gaman AI System Architecture" width="100%" style="border-radius: 8px;" />
