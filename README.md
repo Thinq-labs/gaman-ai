@@ -1,4 +1,4 @@
-# Gaman AI- the system one
+# Gaman AI- The jev ai 
 
 <div align="center">
 
