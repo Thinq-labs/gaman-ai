@@ -1,4 +1,4 @@
-# Gaman AI- The open source system one model
+# Gaman AI- The open-source system one model
 
 <div align="center">
 
