@@ -255,13 +255,13 @@ gaman-ai/
 │   ├── optimize_model.py # Graph fusions & constant folding
 │   └── benchmark.py      # Microsecond latency & ECE measurement suite
 ├── tests/                # 225 unit, integration, and property tests
-├── models/               # Local ONNX weights and tokenizer artifacts
+├── models/               # Local ONNX weights and tokeniser artefacts
 └── docs/                 # Architecture Decision Records (ADRs) and specs
 ```
 
 ---
 
-## Roadmap & Active Frontiers
+## Roadmap & Active Frontier
 
 We are actively expanding Gaman AI and welcoming contributions across these high-impact areas:
 
