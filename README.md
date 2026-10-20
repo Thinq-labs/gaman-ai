@@ -267,7 +267,7 @@ We are actively expanding Gaman AI and welcoming contributions across these high
 
 - [ ] **WebAssembly Edge Target:** Compile ONNX Runtime Web / Wasm for in-browser, zero-backend edge reflexes.
 - [ ] **Native Rust & C++ SDKs:** Standalone binaries and C FFI bindings without Python runtime overhead.
-- [ ] **Apple Silicon & CoreML Fusion:** Dedicated graph optimization for the Apple Neural Engine (`CoreMLExecutionProvider`).
+- [ ] **Apple Silicon & CoreML Fusion:** Dedicated graph optimisation for the Apple Neural Engine (`CoreMLExecutionProvider`).
 - [ ] **Agent Framework Connectors:** First-class reflex routers and tool selectors for LangChain, LlamaIndex, AutoGen, and CrewAI.
 - [ ] **Conformal Prediction:** Finite-sample distribution-free prediction sets with guaranteed coverage bounds.
 - [ ] **Multi-Sequence Batching:** Continuous micro-batching for high-throughput streaming server deployments.
