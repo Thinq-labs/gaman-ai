@@ -1,4 +1,4 @@
-# Gaman AI- The jev ai 
+# Gaman AI- The jev ai alternative
 
 <div align="center">
 
