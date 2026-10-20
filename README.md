@@ -1,4 +1,4 @@
-# Gaman AI- The jev ai alternative
+# Gaman AI- The open source system one model
 
 <div align="center">
 
